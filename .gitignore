@@ -1,0 +1,25 @@
+# Most of this folder is written by the Herdr app (AGENTS.md, *.d.ts, icons,
+# frame/, the shipped mods and layouts) or holds personal state (shared.json
+# caches Linear issues, view.json, window.json, data/, telemetry/). So ignore
+# everything and list what's ours.
+/*
+!/.gitignore
+!/README.md
+!/keys.json
+
+# Layouts: only our own (shipped ones are Herdr's).
+!/layouts/
+/layouts/*
+!/layouts/main-linear.json
+
+# Mods: only our own. Herdr rewrites the type files and jsconfig on every start.
+!/mods/
+/mods/*
+!/mods/linear-issues/
+!/mods/linear-search/
+!/mods/tabs-linear/
+/mods/*/gpui-kit.d.ts
+/mods/*/herdr.d.ts
+/mods/*/jsconfig.json
+*.error
+.DS_Store

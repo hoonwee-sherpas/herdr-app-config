@@ -1,0 +1,4 @@
+{
+  "place": "none",
+  "overlay": { "kind": "window", "key": "linear-issues", "keep": true, "width": 480, "height": 0.8 }
+}
