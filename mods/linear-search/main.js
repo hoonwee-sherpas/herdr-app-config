@@ -205,9 +205,7 @@ export default class LinearSearch extends View {
   }
 
   icon(t, state) {
-    if (!CLOSED.has(state.type)) return stateIcon(state, this.steps);
-    return h_flex().size(14).flex_none().rounded(7).bg(state.color).items_center().justify_center()
-      .text_size(9).font_bold().text_color("#ffffff").child(state.type === "completed" ? "✓" : "✕");
+    return stateIcon(state, this.steps);
   }
 
   row(t, issue, i) {

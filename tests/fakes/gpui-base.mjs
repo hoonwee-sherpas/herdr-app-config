@@ -4,6 +4,9 @@ import { el } from "./element.mjs";
 export const h_flex = () => el("h_flex");
 export const v_flex = () => el("v_flex");
 export const TextView = (...args) => el("text_view", args);
+TextView.markdown = (id, source) => el("text_view", [id, source]);
+// Components built with new(id): the id lands in props.id so byId finds them.
+export const Popover = { new: (id) => el("Popover", id).id(id) };
 
 // An input's retained state. Tests type with `state.type("abc", cx)` and press
 // Enter with `state.submit(cx)`.

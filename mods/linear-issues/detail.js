@@ -5,7 +5,8 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, TextView } from "gpui-base";
 import { run, spaces, shared, setShared, theme, openOverlay, home } from "herdr";
-import { gql, errorText, DETAIL_KEY, startedSteps, stateIcon, spacesFor, openUrl, iconButton } from "./common.js";
+import { gql, errorText, DETAIL_KEY, MINE_KEY, STATE_FIELDS, startedSteps, stateIcon, spacesFor, openUrl, iconButton,
+  statePicker, teamStates, setIssueState, shareState } from "./common.js";
 
 const STATE = "state { id name type position color }";
 const QUERY = `query($id: String!) { issue(id: $id) {
@@ -16,7 +17,7 @@ const QUERY = `query($id: String!) { issue(id: $id) {
   children { nodes { identifier title ${STATE} } }
   attachments { nodes { title subtitle url } }
   comments(first: 50) { nodes { body createdAt user { name } } }
-  team { states(filter: { type: { eq: "started" } }) { nodes { id position team { id } } } } } }`;
+  team { key states { nodes { ${STATE_FIELDS} } } } } }`;
 
 const day = (iso) => (iso ? iso.slice(0, 10) : "");
 
@@ -29,11 +30,55 @@ export class Detail {
     this.steps = new Map();
     this.error = null;
     this.loading = false;
+    // The team's states, which status menu is open ("ld-state" | "ld-head-state"),
+    // and when this copy last knew the issue's state (to follow the list's changes).
+    this.states = [];
+    this.picking = null;
+    this.knownAt = 0;
     // Follow the picked issue; a cheap check, the fetch only runs on a change.
     cx.timer.every(400, (cx) => {
       const want = shared(DETAIL_KEY) ?? null;
-      if (want && want !== this.id) this.load(want, cx);
+      if (want && want !== this.id) return this.load(want, cx);
+      this.follow(cx);
     });
+  }
+
+  // A status changed elsewhere (the list) since this copy last knew it.
+  follow(cx) {
+    const mine = shared(MINE_KEY);
+    if (!this.issue || !mine?.issues || mine.at <= this.knownAt) return;
+    this.knownAt = mine.at;
+    const there = mine.issues.find((i) => i.identifier === this.issue.identifier);
+    if (there && there.state.id !== this.issue.state.id) { this.issue = { ...this.issue, state: there.state }; cx.notify(); }
+  }
+
+  pickState(state, cx) {
+    this.picking = null;
+    const issue = this.issue, before = issue.state;
+    if (state.id === before.id) return cx.notify();
+    this.error = null;
+    this.issue = { ...issue, state };
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const now = await setIssueState(issue, state);
+        if (this.issue?.identifier === issue.identifier) this.issue = { ...this.issue, state: now };
+        shareState(issue.identifier, now);
+        this.knownAt = shared(MINE_KEY)?.at ?? Date.now();
+      } catch (e) {
+        if (this.issue?.identifier === issue.identifier) this.issue = { ...this.issue, state: before };
+        this.error = `Couldn't change the status: ${errorText(e)}`;
+      } finally {
+        cx.notify();
+      }
+    });
+  }
+
+  picker(t, id, size, label) {
+    return statePicker(t, { id, state: this.issue.state, steps: this.steps, states: this.states, size, label,
+      open: this.picking === id,
+      onOpen: (o, cx) => { this.picking = o ? id : null; cx.notify(); },
+      onPick: (s, cx) => this.pickState(s, cx) });
   }
 
   load(id, cx) {
@@ -47,6 +92,8 @@ export class Detail {
         if (this.id !== id) return; // another issue was picked meanwhile
         this.issue = d.issue;
         this.steps = startedSteps(d.issue.team.states.nodes);
+        this.states = teamStates(d.issue.team.states.nodes, d.issue.team.key);
+        this.knownAt = Date.now();
       } catch (e) {
         if (this.id === id) this.error = errorText(e);
       } finally {
@@ -90,7 +137,7 @@ export class Detail {
     const comments = [...i.comments.nodes].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return frame
       .child(h_flex().h(40).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
-        .child(stateIcon(i.state, this.steps))
+        .child(this.picker(t, "ld-head-state", 14))
         .child(div().text_size(12).text_color(t.muted).child(i.identifier))
         .child(div().flex_1())
         .when(this.loading, (el) => el.child(div().text_size(11).text_color(t.dim).child("loading…")))
@@ -105,7 +152,7 @@ export class Detail {
       .child(v_flex().id("ld-body").flex_1().min_h(0).overflow_y_scrollbar().px(18).py(14).gap(16)
         .child(div().text_size(17).font_semibold().child(i.title))
         .child(v_flex().gap(2)
-          .child(this.field(t, "Status", h_flex().gap(6).items_center().child(stateIcon(i.state, this.steps, 13)).child(i.state.name)))
+          .child(this.field(t, "Status", div().px(2).child(this.picker(t, "ld-state", 13, i.state.name))))
           .child(this.field(t, "Priority", div().child(i.priorityLabel)))
           .child(this.field(t, "Project", div().child(i.project?.name ?? "—")))
           .child(this.field(t, "Assignee", div().child(i.assignee?.name ?? "—")))

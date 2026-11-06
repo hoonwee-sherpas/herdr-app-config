@@ -11,7 +11,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { run, spaces, agents, layout, shared, setShared, theme, openOverlay, closeOverlay, props, home, nextCommand } from "herdr";
 import { gql, errorText, DETAIL_KEY, startedSteps, stateIcon, spacesFor, openUrl, iconButton,
-  MINE_KEY, STATES_KEY, ISSUE_FIELDS, fresh } from "./common.js";
+  MINE_KEY, STATES_KEY, STATE_FIELDS, ISSUE_FIELDS, fresh, statePicker, teamStates, setIssueState, shareState } from "./common.js";
 import { Detail } from "./detail.js";
 
 const POLL_MS = 3 * 60 * 1000;
@@ -19,7 +19,7 @@ const REPO = () => `${home()}/Sherpas/basecamp`;
 const QUERY = `{ viewer { assignedIssues(first: 250, orderBy: updatedAt,
   filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) {
   nodes { ${ISSUE_FIELDS} } } }
-  workflowStates(first: 250, filter: { type: { eq: "started" } }) { nodes { id position team { id } } } }`;
+  workflowStates(first: 250) { nodes { ${STATE_FIELDS} } } }`;
 // Workflow state types, most active first.
 const TYPE_RANK = { started: 0, unstarted: 1, backlog: 2, triage: 3 };
 const URGENCY = { blocked: 0, done: 1, working: 2, idle: 3 };
@@ -57,9 +57,12 @@ export default class LinearIssues extends View {
     this.backlog = load("backlog", false);
     this.folded = new Set(load("folded", []));
     this.lastCommand = null;
+    // The issue whose status menu is open, and why the last status change failed.
+    this.picking = null;
+    this.stateError = null;
     // Start from the shared cache; fetch now only if it's older than a poll.
     this.adopt();
-    if (!fresh(shared(MINE_KEY), POLL_MS)) this.refresh(cx);
+    if (!fresh(shared(MINE_KEY), POLL_MS) || !shared(STATES_KEY)) this.refresh(cx);
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
     // Commands for keys and scripts (herdr-app do linear-issues.<command>):
     // refresh, go:<ID> (its space, else Linear), detail:<ID>, web:<ID>, worktree:<ID>.
@@ -83,6 +86,33 @@ export default class LinearIssues extends View {
     else if (name === "detail") this.showDetail(issue);
     else if (name === "web") this.web(issue);
     else if (name === "worktree") this.newWorktree(issue);
+  }
+
+  // Moves the issue to `state`: shown at once, sent to Linear, put back if it refuses.
+  pickState(issue, state, cx) {
+    this.picking = null;
+    const before = issue.state;
+    if (state.id === before.id) return cx.notify();
+    this.stateError = null;
+    this.patch(issue.identifier, state);
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const now = await setIssueState(issue, state);
+        this.patch(issue.identifier, now);
+        shareState(issue.identifier, now);
+        this.fetchedAt = Math.max(this.fetchedAt ?? 0, shared(MINE_KEY)?.at ?? 0);
+      } catch (e) {
+        this.patch(issue.identifier, before);
+        this.stateError = `Couldn't change ${issue.identifier}: ${errorText(e)}`;
+      } finally {
+        cx.notify();
+      }
+    });
+  }
+
+  patch(identifier, state) {
+    this.issues = this.issues.map((i) => (i.identifier === identifier ? { ...i, state } : i));
   }
 
   web(issue) {
@@ -221,7 +251,11 @@ export default class LinearIssues extends View {
       .when(shared(DETAIL_KEY) === issue.identifier, (el) => el.bg(t.selected))
       .on_click(() => this.showDetail(issue))
       .child(div().w(3).h(18).flex_none().rounded(2).bg(gutter))
-      .child(stateIcon(issue.state, this.steps))
+      .child(statePicker(t, { id: `li-state-${issue.identifier}`, state: issue.state, steps: this.steps,
+        states: this.picking === issue.identifier ? teamStates(shared(STATES_KEY)?.nodes, issue.team?.key) : [],
+        open: this.picking === issue.identifier,
+        onOpen: (o, cx) => { this.picking = o ? issue.identifier : null; cx.notify(); },
+        onPick: (s, cx) => this.pickState(issue, s, cx) }))
       .child(div().w(70).flex_none().text_size(11).text_color(t.muted).child(issue.identifier))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(issue.title))
       .when(matched.length > 0, (el) => el.child(this.agentChip(t, issue, matched, list)))
@@ -274,6 +308,9 @@ export default class LinearIssues extends View {
         .child(this.chip(t, "li-backlog", "Backlog", this.backlog, () => { this.backlog = !this.backlog; save("backlog", this.backlog); })))
       .when(Boolean(this.error), (el) => el.child(div().px(14).py(8).text_size(12).text_color(t.ansi1)
         .child(`Couldn't load: ${this.error}`)))
+      .when(Boolean(this.stateError), (el) => el.child(h_flex().px(14).py(6).gap(8).items_center().text_size(12).text_color(t.ansi1)
+        .child(div().flex_1().min_w(0).child(this.stateError))
+        .child(iconButton(t, "li-state-error-close", "✕", (cx) => { this.stateError = null; cx.notify(); }))))
       .child(v_flex().id("li-list").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(2)
         .when(!this.loading && !this.error && this.issues.length === 0, (el) =>
           el.child(div().p(10).text_color(t.dim).child("No open issues assigned to you.")))

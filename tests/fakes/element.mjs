@@ -14,6 +14,9 @@ export function el(kind, arg) {
         t.calls.push([name, args]);
         if (name === "child") { if (args[0] != null && args[0] !== false) t.kids.push(args[0]); }
         else if (name === "children") { for (const k of args[0] ?? []) if (k != null && k !== false) t.kids.push(k); }
+        // Slots (a Popover's trigger and content) are drawn by the component, but
+        // a test should find what's in them, so they count as children here.
+        else if (name === "trigger" || name === "content") { t.kids.push(args[0]); t.props[name] = args[0]; }
         else if (name === "when") { if (args[0]) args[1](proxy); }
         else if (name.startsWith("on_")) {
           const fn = args.at(-1);
