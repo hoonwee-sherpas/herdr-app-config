@@ -8,7 +8,8 @@ changes show up as soon as the files are saved.
 
 | Path | What it is |
 |---|---|
-| `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, Linear) |
+| `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, Linear), with one Spaces list that shows each space's agents |
+| `mods/spaces-agents/` | That sidebar list: a copy of Herdr's Spaces list with each space's agents (status, time in that state) listed under it; replaces the separate Agents list |
 | `mods/tabs-linear/` | The tab bar for that layout, with buttons that open the panel |
 | `mods/linear-issues/` | The Linear panel: issues assigned to you, grouped by project or state, matched to Herdr spaces by branch, plus an issue detail view |
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
@@ -57,7 +58,7 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
 3. **Pick the layout:** ⌘⇧L → `main-linear`.
 
 4. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
-   (and the same for `linear-issues`, `tabs-linear` and `Sketch`), then `herdr-app status`,
+   (and the same for `linear-issues`, `tabs-linear`, `Sketch` and `spaces-agents`), then `herdr-app status`,
    which should list no errors.
 
 ## Things to know
