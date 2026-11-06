@@ -18,6 +18,7 @@ async function mount(shapes) {
   const v = new Sketch();
   v.init({}, cx);
   await cx.settle();
+  await cx.flush(); // the pane takes the keyboard once it's shown
   return { v, cx };
 }
 
@@ -286,4 +287,66 @@ test("an arrow moved with both its shapes stays attached; moved alone, it lets g
   assert.equal(x().from, undefined);
   assert.equal(x().to, undefined);
   assert.deepEqual(x().points, [[460, 56], [460, 294]]);
+});
+
+// ---- Space never sticks (its key-up can go missing)
+
+const spaceDown = (v, cx, held = false) => v.render().handlers.on_key_down(key("space", { is_held: held }), cx);
+
+test("Space pressed, then focus left the pane: the next drag selects, not pans", async () => {
+  const { v, cx } = await mount(three());
+  spaceDown(v, cx);
+  v.handle.focused = false; // the keyboard went elsewhere; Space's key-up never comes here
+  drag(v, cx, at(-20, -20), at(320, 70));
+  assert.deepEqual(v.pan, { x: 40, y: 40 });
+  assert.equal(v.sel.length, 2);
+});
+
+test("Space whose key repeats stopped was released: the drag selects", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const { v, cx } = await mount(three());
+  spaceDown(v, cx);
+  t.mock.timers.tick(400); spaceDown(v, cx, true); // repeats while held…
+  t.mock.timers.tick(30); spaceDown(v, cx, true);
+  t.mock.timers.tick(1000); // …then none for a second: it was let go
+  drag(v, cx, at(-20, -20), at(320, 70));
+  assert.deepEqual(v.pan, { x: 40, y: 40 });
+  assert.equal(v.sel.length, 2);
+});
+
+test("Space pressed long ago with no repeats at all was released", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const { v, cx } = await mount(three());
+  spaceDown(v, cx);
+  t.mock.timers.tick(5000);
+  drag(v, cx, at(-20, -20), at(320, 70));
+  assert.equal(v.sel.length, 2);
+});
+
+test("Space held and repeating pans, however long it's held", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const { v, cx } = await mount(three());
+  spaceDown(v, cx);
+  for (let i = 0; i < 200; i++) { t.mock.timers.tick(30); spaceDown(v, cx, true); }
+  drag(v, cx, [500, 500], [530, 520]);
+  assert.deepEqual(v.pan, { x: 70, y: 60 });
+});
+
+test("Space just pressed (before any repeat) pans", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const { v, cx } = await mount(three());
+  spaceDown(v, cx);
+  t.mock.timers.tick(150);
+  drag(v, cx, [500, 500], [530, 520]);
+  assert.deepEqual(v.pan, { x: 70, y: 60 });
+});
+
+test("a pan in progress isn't cut off when Space goes stale mid-drag", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const { v, cx } = await mount(three());
+  spaceDown(v, cx);
+  down(v, cx, 500, 500);
+  t.mock.timers.tick(5000);
+  moveTo(v, cx, 530, 520); up(v, cx, 530, 520);
+  assert.deepEqual(v.pan, { x: 70, y: 60 });
 });

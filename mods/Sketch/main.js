@@ -185,6 +185,8 @@ export default class Sketch extends View {
     this.dashed = false;
     this.sel = [];          // selected shape ids
     this.spaceHeld = false; // Space down: a drag pans
+    this.spaceAt = 0;       // Space's last key event (press or repeat)
+    this.spaceRepeats = false;
     this.drag = null;
     this.pan = { x: 40, y: 40 };
     this.zoom = 1;
@@ -360,8 +362,21 @@ export default class Sketch extends View {
 
   // ---- mouse
 
+  // Whether Space is still down. Its key-up only reaches this pane while it
+  // has the keyboard, so it can go missing (focus moved, the app lost focus).
+  // A held key repeats, so Space counts as down while it has the keyboard and
+  // its key events are current: repeats seen within the last moment, or, before
+  // repeats start, a press within the longest delay macOS waits to repeat.
+  spaceStillDown() {
+    if (!this.spaceHeld || !this.handle.is_focused()) return false;
+    const age = Date.now() - this.spaceAt;
+    return this.spaceRepeats ? age < 500 : age < 2500;
+  }
+
   down(e, cx) {
     cx.stop_propagation();
+    // Before taking focus: a Space remembered while the keyboard was elsewhere is stale.
+    if (this.spaceHeld && !this.spaceStillDown()) this.spaceHeld = false;
     this.measure(e);
     if (this.editing) this.finishEdit(cx);
     this.handle.focus();
@@ -548,6 +563,8 @@ export default class Sketch extends View {
     const k = e.keystroke;
     if (k === "space" && !this.editing) {
       this.spaceHeld = true;
+      this.spaceAt = Date.now();
+      this.spaceRepeats = Boolean(e.is_held);
       cx.stop_propagation();
       cx.notify();
       return;
@@ -709,7 +726,7 @@ export default class Sketch extends View {
     this.drawSelection(byId, layers);
     this.editor(layers);
     const first = this.selection()[0];
-    const cursor = this.drag?.kind === "pan" ? "grabbing" : this.spaceHeld ? "grab" : this.tool === "select" ? "default" : "crosshair";
+    const cursor = this.drag?.kind === "pan" ? "grabbing" : this.spaceStillDown() ? "grab" : this.tool === "select" ? "default" : "crosshair";
 
     const toolbar = h_flex().flex_none().flex_wrap().min_h(40).py(6).px(10).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .children(TOOLS.map(([name, key, label]) => this.button(`tool-${name}`, `${label} ${key.toUpperCase()}`, this.tool === name, () => this.setTool(name))))
