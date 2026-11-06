@@ -4,14 +4,16 @@
 // as you draw and reloaded when something else (an AI agent) changes it.
 //
 // Keys: V select · R box · O ellipse · D diamond · A arrow · L line · P pen ·
-// T text · 1–6 color · F fill · S dashed · ⌫ delete · ↵ / double-click edit
-// text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect.
+// T text · I insert images · ⌘V paste an image · 1–6 color · F fill · S dashed ·
+// ⌫ delete · ↵ / double-click edit text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect.
+// Pictures dropped from Finder are added too; each is kept as a PNG in
+// data/sketch/images/.
 // Mouse: drag empty space to select the shapes inside a box, ⇧-click to add
 // or remove one, drag a selected shape to move the whole selection. Hold Space
 // (or the middle button) and drag to pan, scroll to pan, ⌘ or ctrl + scroll to
 // zoom. Drag a lone shape's bottom-right handle to resize.
 
-import { View, div, PathBuilder, Background } from "gpui-kit";
+import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse } from "./rough.js";
 import { appHome, readTextFile, writeTextFile, watchFolder, exec, theme, settings } from "herdr";
@@ -30,7 +32,34 @@ const TOOLS = [
   ["select", "v", "Select"], ["rect", "r", "Box"], ["ellipse", "o", "Ellipse"], ["diamond", "d", "Diamond"],
   ["arrow", "a", "Arrow"], ["line", "l", "Line"], ["pen", "p", "Pen"], ["text", "t", "Text"],
 ];
-export const BOXY = new Set(["rect", "ellipse", "diamond", "text"]);
+export const BOXY = new Set(["rect", "ellipse", "diamond", "text", "image"]);
+// Shapes that take a text label (double-click, Enter).
+const labeled = (s) => BOXY.has(s.type) && s.type !== "image";
+// Files the image converter reads.
+const PICTURE = /\.(png|jpe?g|gif|heic|heif|tiff?|webp|bmp)$/i;
+
+// macOS does the image work (mods can't read the clipboard's image or decode
+// files): AppKit turns the clipboard's image, or a picture file, into a PNG and
+// prints its size in points ("none" when there's no image). JXA, via osascript.
+const TO_PNG = `ObjC.import("AppKit");
+function run(argv) {
+  const src = argv[0], dest = argv[1];
+  const img = src === "--clipboard"
+    ? $.NSImage.alloc.initWithPasteboard($.NSPasteboard.generalPasteboard)
+    : $.NSImage.alloc.initWithContentsOfFile(src);
+  if (!img || img.isNil() || !img.isValid) return "none";
+  const rep = $.NSBitmapImageRep.imageRepWithData(img.TIFFRepresentation);
+  const png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $());
+  if (!png.writeToFileAtomically(dest, true)) throw new Error("couldn't write " + dest);
+  return Math.round(img.size.width) + " " + Math.round(img.size.height);
+}`;
+// The file dialog: the chosen pictures' paths, one per line. Cancel exits 1 (-128).
+const CHOOSE = `set picked to choose file with prompt "Insert images" of type {"public.image"} with multiple selections allowed
+set out to ""
+repeat with f in picked
+  set out to out & POSIX path of f & linefeed
+end repeat
+return out`;
 const GAP = 6;          // between an attached arrow and its shape
 const HANDLE = 9;       // resize handle, screen px
 const FONT = 20;        // default text size
@@ -201,6 +230,7 @@ export default class Sketch extends View {
     this.writing = null;
     this.saveSeq = 0;
     this.error = null;
+    this.note = null;       // a passing message ("No image on the clipboard")
     this.done = false;
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Text" });
@@ -323,7 +353,7 @@ export default class Sketch extends View {
   }
 
   toggleFill(cx) {
-    const fillable = this.selection().filter((s) => BOXY.has(s.type) && s.type !== "text");
+    const fillable = this.selection().filter((s) => BOXY.has(s.type) && s.type !== "text" && s.type !== "image");
     this.fill = fillable.length ? !fillable[0].fill : !this.fill;
     if (fillable.length) this.style(cx, () => ({ fill: this.fill ? COLORS[this.color][1] : null }), fillable);
   }
@@ -386,6 +416,7 @@ export default class Sketch extends View {
     // Before taking focus: a Space remembered while the keyboard was elsewhere is stale.
     if (this.spaceHeld && !this.spaceStillDown()) this.spaceHeld = false;
     this.measure(e);
+    this.note = null;
     if (this.editing) this.finishEdit(cx);
     this.handle.focus();
     const local = this.local(e);
@@ -411,7 +442,7 @@ export default class Sketch extends View {
       }
       const s = this.hitAt(p);
       const shift = Boolean(e.modifiers?.shift);
-      if (s && e.click_count >= 2 && BOXY.has(s.type)) { this.startEdit(s); return; }
+      if (s && e.click_count >= 2 && labeled(s)) { this.startEdit(s); return; }
       if (s && shift) {
         this.sel = this.sel.includes(s.id) ? this.sel.filter((id) => id !== s.id) : [...this.sel, s.id];
         return;
@@ -440,6 +471,56 @@ export default class Sketch extends View {
     else s = { id: newId(), type: this.tool, x: p[0], y: p[1], w: 0, h: 0, ...style, ...(this.fill ? { fill: COLORS[this.color][1] } : {}) };
     this.shapes.push(s);
     this.drag = { kind: "draw", s, start: p };
+  }
+
+  // ---- images
+
+  // Opens the file dialog and adds the chosen pictures.
+  pickImages(cx) {
+    cx.spawn(async (cx) => {
+      const r = await exec("osascript", ["-e", CHOOSE]);
+      if (r.code !== 0) {
+        if (!/-128/.test(r.stderr)) { this.note = `Couldn't open the file dialog: ${r.stderr.trim()}`; cx.notify(); }
+        return;
+      }
+      this.addImages(r.stdout.split("\n").filter(Boolean), cx);
+    });
+  }
+
+  // Adds pictures ("--clipboard" for the clipboard's) in the middle of the view,
+  // each scaled down to fit it, as one undo step, and selects them.
+  addImages(sources, cx) {
+    cx.spawn(async (cx) => {
+      const added = [];
+      for (const src of sources) {
+        const id = newId();
+        try {
+          await exec("mkdir", ["-p", `${DIR()}/images`]);
+          const r = await exec("osascript", ["-l", "JavaScript", "-e", TO_PNG, src, `${DIR()}/images/${id}.png`]);
+          if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `exit ${r.code}`);
+          const [w, h] = r.stdout.trim().split(" ").map(Number);
+          if (w > 0 && h > 0) added.push({ id, type: "image", src: `images/${id}.png`, x: 0, y: 0, w, h });
+          else this.note = src === "--clipboard" ? "No image on the clipboard" : `Not a picture: ${src.split("/").pop()}`;
+        } catch (e) {
+          this.note = `Couldn't add the image: ${e?.message ?? e}`;
+        }
+      }
+      if (added.length) {
+        const [mx, my] = this.world({ x: this.size.width / 2, y: this.size.height / 2 });
+        const maxW = (this.size.width * 0.8) / this.zoom, maxH = (this.size.height * 0.8) / this.zoom;
+        this.remember();
+        added.forEach((s, i) => {
+          const k = Math.min(1, maxW / s.w, maxH / s.h);
+          s.w = Math.round(s.w * k); s.h = Math.round(s.h * k);
+          s.x = mx - s.w / 2 + i * 24; s.y = my - s.h / 2 + i * 24;
+          this.shapes.push(s);
+        });
+        this.sel = added.map((s) => s.id);
+        this.tool = "select";
+        this.save(cx);
+      }
+      cx.notify();
+    });
   }
 
   // A drag that moves the selection. Each shape remembers where it started; an
@@ -481,6 +562,7 @@ export default class Sketch extends View {
     } else if (d.kind === "resize") {
       d.s.x = d.b.x; d.s.y = d.b.y;
       d.s.w = Math.max(8, p[0] - d.b.x); d.s.h = Math.max(8, p[1] - d.b.y);
+      if (d.s.type === "image") d.s.h = d.s.w * (d.b.h / d.b.w); // keeps its proportions
     } else if (d.kind === "draw") {
       const s = d.s;
       if (s.type === "pen") {
@@ -599,7 +681,9 @@ export default class Sketch extends View {
       for (const x of this.shapes) { if (gone.has(x.from)) delete x.from; if (gone.has(x.to)) delete x.to; }
       this.sel = [];
       this.save(cx);
-    } else if (k === "enter" && s && BOXY.has(s.type)) this.startEdit(s);
+    } else if (k === "enter" && s && labeled(s)) this.startEdit(s);
+    else if (k === "i") this.pickImages(cx);
+    else if (k === "cmd-v") this.addImages(["--clipboard"], cx);
     else if (k === "cmd-z") this.restore(this.undo, this.redo, cx);
     else if (k === "cmd-shift-z") this.restore(this.redo, this.undo, cx);
     else if (k === "shift-1" || k === "!" || e.key_char === "!") this.fit();
@@ -640,6 +724,13 @@ export default class Sketch extends View {
       return pb;
     };
 
+    if (s.type === "image") {
+      if (typeof s.src !== "string") return;
+      const b = norm(s);
+      const [x, y] = this.screen([b.x, b.y]);
+      out.push(image(`data/sketch/${s.src}`).absolute().left(x).top(y).w(b.w * z).h(b.h * z));
+      return;
+    }
     if (SHAPE_PATH[s.type]) {
       const b = norm(s);
       if (b.w < 1 || b.h < 1) return;
@@ -796,8 +887,9 @@ export default class Sketch extends View {
       .child(div().w(8))
       .child(this.button("fill", "Fill F", first ? Boolean(first.fill) : this.fill, (cx) => this.toggleFill(cx)))
       .child(this.button("rough", "Hand-drawn H", this.rough, () => this.toggleRough()))
+      .child(this.button("image", "Image I", false, (cx) => this.pickImages(cx)))
       .child(div().flex_1())
-      .child(div().text_size(11).text_color(t.dim).child(this.error ?? `${Math.round(this.zoom * 100)}%`))
+      .child(div().text_size(11).text_color(t.dim).child(this.error ?? this.note ?? `${Math.round(this.zoom * 100)}%`))
       .child(this.button("fit", "Fit ⇧1", false, () => this.fit()));
 
     const canvas = div().id("sketch-canvas").relative().flex_1().min_h(0).overflow_hidden().bg(t.background)
@@ -814,6 +906,7 @@ export default class Sketch extends View {
       .on_mouse_up("left", (e, cx) => { this.up(e, cx); cx.notify(); })
       .on_mouse_up("middle", (_e, cx) => { this.drag = null; cx.notify(); })
       .on_scroll_wheel((e, cx) => this.wheel(e, cx))
+      .on_drop((e, cx) => { const pics = (e.paths ?? []).filter((f) => PICTURE.test(f)); if (pics.length) this.addImages(pics, cx); })
       .children(layers)
       .when(!this.shapes.length, (el) => el.child(div().absolute().top(0).left(0).size_full().flex().items_center().justify_center()
         .text_color(t.dim).text_size(14).child("Pick a tool (R box, A arrow, P pen, T text) and drag here.")));
@@ -825,7 +918,7 @@ export default class Sketch extends View {
       .child(canvas)
       .child(h_flex().flex_none().h(24).px(10).items_center().gap(12).border_t(1).border_color(t.border).bg(t.chrome)
         .text_size(11).text_color(t.dim)
-        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌫ delete · ⌘Z undo")
+        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌘V paste image · ⌫ delete · ⌘Z undo")
         .child(div().flex_1())
         .child("data/sketch/board.json"));
   }

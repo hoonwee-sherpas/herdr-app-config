@@ -416,3 +416,126 @@ test("the wobble zooms with the drawing", async () => {
     if (typeof x === "number") assert.ok(Math.abs((x - 40) * 2 + 40 - two[i][j][k + 1]) < 1e-9);
   })));
 });
+
+// ---- images: ⌘V, the Image button / I (a file dialog), and files dropped on the canvas.
+// osascript stands in for macOS: the converter answers "w h" (or "none"), the dialog the chosen paths.
+const IMAGES = "/app/data/sketch/images/";
+function mac({ clipboard = "640 480", files = [], sizes = {}, cancel = false } = {}) {
+  const calls = { convert: [], dialog: 0 };
+  host.exec = async (cmd, args) => {
+    if (cmd !== "osascript") return { code: 0, stdout: "", stderr: "" };
+    if (args.join(" ").includes("choose file")) {
+      calls.dialog++;
+      return cancel ? { code: 1, stdout: "", stderr: "execution error: User canceled. (-128)" }
+        : { code: 0, stdout: files.map((f) => `${f}\n`).join(""), stderr: "" };
+    }
+    const [src, dest] = args.slice(-2);
+    calls.convert.push([src, dest]);
+    return { code: 0, stdout: `${src === "--clipboard" ? clipboard : sizes[src] ?? "none"}\n`, stderr: "" };
+  };
+  return calls;
+}
+const images = (v) => v.shapes.filter((s) => s.type === "image");
+
+test("⌘V pastes the clipboard's image in the middle of the view, selected and saved", async () => {
+  const calls = mac({ clipboard: "320 200" });
+  const { v, cx } = await mount();
+  press(v, cx, "cmd-v");
+  await cx.settle();
+  const [img] = images(v);
+  assert.ok(img, "an image shape");
+  assert.match(img.src, /^images\/[\w-]+\.png$/);
+  assert.deepEqual(calls.convert, [["--clipboard", IMAGES + img.src.slice("images/".length)]]);
+  // The view is 1000×700 panned (40, 40): its middle is world (460, 310).
+  assert.deepEqual([img.x + img.w / 2, img.y + img.h / 2, img.w, img.h], [460, 310, 320, 200]);
+  assert.deepEqual(v.sel, [img.id]);
+  await cx.flush();
+  assert.match(host.files.get(FILE), /"type":"image"/);
+});
+
+test("a pasted image bigger than the view is scaled down to fit, keeping its shape", async () => {
+  mac({ clipboard: "4000 2000" });
+  const { v, cx } = await mount();
+  press(v, cx, "cmd-v");
+  await cx.settle();
+  const [img] = images(v);
+  assert.ok(img.w <= 1000 && img.h <= 700);
+  assert.equal(img.w / img.h, 2);
+});
+
+test("⌘V with no image on the clipboard adds nothing and says so", async () => {
+  mac({ clipboard: "none" });
+  const { v, cx } = await mount();
+  press(v, cx, "cmd-v");
+  await cx.settle();
+  assert.equal(v.shapes.length, 0);
+  assert.match(text(v.render()), /No image on the clipboard/);
+});
+
+test("I opens the file dialog, and every chosen picture is added", async () => {
+  const calls = mac({ files: ["/Users/me/a.jpg", "/Users/me/b.heic"], sizes: { "/Users/me/a.jpg": "100 50", "/Users/me/b.heic": "80 80" } });
+  const { v, cx } = await mount();
+  press(v, cx, "i");
+  await cx.settle();
+  assert.equal(calls.dialog, 1);
+  assert.deepEqual(calls.convert.map(([src]) => src), ["/Users/me/a.jpg", "/Users/me/b.heic"]);
+  assert.deepEqual(images(v).map((s) => [s.w, s.h]), [[100, 50], [80, 80]]);
+  assert.equal(v.sel.length, 2, "both selected");
+  assert.notEqual(images(v)[0].x, images(v)[1].x, "not stacked exactly on top of each other");
+});
+
+test("the Image button opens the dialog too, and canceling it adds nothing", async () => {
+  const calls = mac({ cancel: true });
+  const { v, cx } = await mount();
+  byId(v.render(), "image").handlers.on_click({}, cx);
+  await cx.settle();
+  assert.equal(calls.dialog, 1);
+  assert.equal(v.shapes.length, 0);
+  assert.equal(v.error, null, "canceling isn't an error");
+});
+
+test("pictures dropped on the canvas are added; other files are skipped", async () => {
+  const calls = mac({ sizes: { "/d/shot.png": "300 100" } });
+  const { v, cx } = await mount();
+  canvas(v).handlers.on_drop({ paths: ["/d/shot.png", "/d/notes.txt"] }, cx);
+  await cx.settle();
+  assert.deepEqual(images(v).map((s) => [s.w, s.h]), [[300, 100]]);
+  assert.deepEqual(calls.convert.map(([src]) => src), ["/d/shot.png"], "a text file isn't sent to the converter");
+});
+
+test("an image is drawn from its file, where it sits, at herdr's zoom and the board's", async () => {
+  host.settings.zoom = 1.1;
+  const { v, cx } = await mount([{ id: "pic", type: "image", src: "images/pic.png", x: 10, y: 20, w: 200, h: 100 }]);
+  const img = all(v.render(), (e) => e.kind === "image")[0];
+  assert.equal(img.arg, "data/sketch/images/pic.png");
+  assert.deepEqual([img.props.left, img.props.top, img.props.w, img.props.h], [50, 60, 200, 100]);
+  // Clicked at its middle (screen points, zoomed), it's selected.
+  down(v, cx, 1.1 * (40 + 110), 1.1 * (40 + 70));
+  up(v, cx, 1.1 * (40 + 110), 1.1 * (40 + 70));
+  assert.deepEqual(v.sel, ["pic"]);
+});
+
+test("resizing an image keeps its proportions", async () => {
+  const { v, cx } = await mount([{ id: "pic", type: "image", src: "images/pic.png", x: 0, y: 0, w: 200, h: 100 }]);
+  down(v, cx, ...at(100, 50));
+  up(v, cx, ...at(100, 50));
+  drag(v, cx, at(200, 100), at(400, 120));
+  const [img] = v.shapes;
+  assert.deepEqual([img.w, img.h], [400, 200]);
+});
+
+test("double-clicking an image doesn't start a text label", async () => {
+  const { v, cx } = await mount([{ id: "pic", type: "image", src: "images/pic.png", x: 0, y: 0, w: 200, h: 100 }]);
+  down(v, cx, ...at(100, 50), { click_count: 2 });
+  up(v, cx, ...at(100, 50));
+  assert.equal(v.editing, null);
+});
+
+test("⌘Z takes a pasted image back out", async () => {
+  mac();
+  const { v, cx } = await mount();
+  press(v, cx, "cmd-v");
+  await cx.settle();
+  press(v, cx, "cmd-z");
+  assert.equal(v.shapes.length, 0);
+});

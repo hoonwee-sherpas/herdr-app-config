@@ -15,6 +15,7 @@ Later shapes are drawn on top. Coordinates are world pixels; y grows downward.
 | `text` | `x`, `y` (top left), `text`, optional `fontSize` (default 20) |
 | `arrow`, `line` | `from` / `to`: ids of shapes to attach to (the ends follow those shapes), or `points`: `[[x, y], ...]`; optional `text` (label at the middle) |
 | `pen` | `points`: `[[x, y], ...]` (freehand) |
+| `image` | `x`, `y`, `w`, `h`, `src`: a picture's path relative to `data/sketch/` (put it in `data/sketch/images/`, e.g. `images/flow.png`) |
 
 Optional on every shape: `color` (ink, default `#1e1e1e`), `width` (stroke, default 2),
 `dashed: true`, `fontSize` (label size, default 16), `rough: false` (draw this shape with
