@@ -19,7 +19,7 @@ const FILE = () => `${DIR()}/board.json`;
 const INK = "#1e1e1e";
 const SELECT = "#4c6ef5";
 // Ink colors and the pastel fill that goes with each.
-const COLORS = [
+export const COLORS = [
   [INK, "#e9ecef"], ["#e03131", "#ffc9c9"], ["#2f9e44", "#b2f2bb"],
   ["#1971c2", "#a5d8ff"], ["#f08c00", "#ffd8a8"], ["#9c36b5", "#eebefa"],
 ];
@@ -27,7 +27,7 @@ const TOOLS = [
   ["select", "v", "Select"], ["rect", "r", "Box"], ["ellipse", "o", "Ellipse"], ["diamond", "d", "Diamond"],
   ["arrow", "a", "Arrow"], ["line", "l", "Line"], ["pen", "p", "Pen"], ["text", "t", "Text"],
 ];
-const BOXY = new Set(["rect", "ellipse", "diamond", "text"]);
+export const BOXY = new Set(["rect", "ellipse", "diamond", "text"]);
 const GAP = 6;          // between an attached arrow and its shape
 const HANDLE = 9;       // resize handle, screen px
 const FONT = 20;        // default text size
@@ -35,7 +35,7 @@ const FONT = 20;        // default text size
 // ---- colors: the board stores light-mode colors; on a dark theme inks are
 // lightened and fills darkened (same hue) when drawn.
 
-function hsl(hex) {
+export function hsl(hex) {
   const n = parseInt(hex.slice(1, 7), 16);
   const r = (n >> 16) / 255, g = ((n >> 8) & 255) / 255, b = (n & 255) / 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2;
@@ -45,7 +45,7 @@ function hsl(hex) {
   return [h / 6, s, l];
 }
 
-function hex([h, s, l]) {
+export function hex([h, s, l]) {
   const f = (n) => {
     const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l);
     return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1)))).toString(16).padStart(2, "0");
@@ -53,13 +53,13 @@ function hex([h, s, l]) {
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-const valid = (c) => typeof c === "string" && /^#[0-9a-fA-F]{6}/.test(c);
-const inkFor = (c, dark) => {
+export const valid = (c) => typeof c === "string" && /^#[0-9a-fA-F]{6}/.test(c);
+export const inkFor = (c, dark) => {
   if (!dark || !valid(c)) return c;
   const [h, s, l] = hsl(c);
   return l < 0.5 ? hex([h, s, 1 - l * 0.6]) : c;
 };
-const fillFor = (c, dark) => {
+export const fillFor = (c, dark) => {
   if (!dark || !valid(c)) return c;
   const [h, s, l] = hsl(c);
   return hex([h, s * 0.6, 0.14 + (1 - l) * 0.4]);
@@ -70,7 +70,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // ---- geometry (world coordinates)
 
-function textSize(s) {
+export function textSize(s) {
   const fs = s.fontSize ?? FONT;
   const lines = String(s.text ?? "").split("\n");
   let w = 0;
@@ -82,15 +82,15 @@ function textSize(s) {
   return { w: Math.max(w, fs), h: lines.length * fs * 1.3 };
 }
 
-function norm(s) {
+export function norm(s) {
   const w = s.w ?? 0, h = s.h ?? 0;
   return { x: Math.min(s.x, s.x + w), y: Math.min(s.y, s.y + h), w: Math.abs(w), h: Math.abs(h) };
 }
 
-const center = (b) => [b.x + b.w / 2, b.y + b.h / 2];
+export const center = (b) => [b.x + b.w / 2, b.y + b.h / 2];
 
 // Where the line from a shape's center toward `aim` leaves the shape.
-function edge(s, aim) {
+export function edge(s, aim) {
   const b = bbox(s);
   const c = center(b);
   const dx = aim[0] - c[0], dy = aim[1] - c[1];
@@ -103,7 +103,7 @@ function edge(s, aim) {
 }
 
 // An arrow or line's points; an end attached to a shape (from/to) sits on its edge.
-function points(s, byId) {
+export function points(s, byId) {
   const pts = Array.isArray(s.points) ? s.points : [];
   const A = s.from ? byId.get(s.from) : null, B = s.to ? byId.get(s.to) : null;
   const a = A && BOXY.has(A.type) ? A : null, b = B && BOXY.has(B.type) ? B : null;
@@ -114,7 +114,7 @@ function points(s, byId) {
   return [a ? edge(a, aim0) : p0, b ? edge(b, aim1) : p1];
 }
 
-function bbox(s, byId) {
+export function bbox(s, byId) {
   if (s.type === "text") { const t = textSize(s); return { x: s.x, y: s.y, w: t.w, h: t.h }; }
   if (BOXY.has(s.type)) return norm(s);
   const pts = points(s, byId ?? new Map());
@@ -124,14 +124,14 @@ function bbox(s, byId) {
   return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
 }
 
-function distSeg(p, a, b) {
+export function distSeg(p, a, b) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
   const l = dx * dx + dy * dy;
   const t = l ? clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l, 0, 1) : 0;
   return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
 }
 
-function hits(s, p, byId, tol) {
+export function hits(s, p, byId, tol) {
   if (BOXY.has(s.type)) {
     const b = bbox(s);
     return p[0] >= b.x - tol && p[0] <= b.x + b.w + tol && p[1] >= b.y - tol && p[1] <= b.y + b.h + tol;
@@ -143,7 +143,7 @@ function hits(s, p, byId, tol) {
 
 // ---- paths (screen coordinates)
 
-function roundRect(pb, x, y, w, h, r) {
+export function roundRect(pb, x, y, w, h, r) {
   if (r < 0.5) return pb.add_polygon([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], true);
   return pb.move_to(x + r, y).line_to(x + w - r, y).arc_to(r, r, 0, false, true, x + w, y + r)
     .line_to(x + w, y + h - r).arc_to(r, r, 0, false, true, x + w - r, y + h)
@@ -163,11 +163,11 @@ function diamond(pb, x, y, w, h) {
 
 const SHAPE_PATH = { rect: roundRect, ellipse, diamond };
 
-function serialize(shapes) {
+export function serialize(shapes) {
   return `{\n  "version": 1,\n  "shapes": [\n${shapes.map((s) => `    ${JSON.stringify(s)}`).join(",\n")}\n  ]\n}\n`;
 }
 
-function parse(text) {
+export function parse(text) {
   const d = JSON.parse(text);
   const list = Array.isArray(d) ? d : d?.shapes;
   if (!Array.isArray(list)) throw new Error("no \"shapes\" list");

@@ -15,6 +15,8 @@ changes show up as soon as the files are saved.
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
 | `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text; follows light/dark themes. The board is `data/sketch/board.json`, which agents can edit (format in `mods/Sketch/FORMAT.md`) |
 | `keys.json` | Key bindings, including the ones below |
+| `tests/`, `package.json` | Unit and integration tests for the mods (`npm test`); how to write them is in `tests/AGENTS.md` |
+| `CLAUDE.md` | Points agents at `tests/AGENTS.md` (Herdr rewrites the root `AGENTS.md`) |
 
 Everything else in `~/.config/herdr-app` is written by Herdr or is personal
 state, so `.gitignore` leaves it out.
@@ -70,3 +72,14 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
   of `mods/linear-issues/common.js`. Change both together.
 - The two Linear mods share a cache in `shared.json` (`linear.mine`,
   `linear.states`), which isn't committed.
+
+## Tests
+
+Node 22.15+ and nothing else:
+
+```sh
+npm test              # unit + integration (mods run against a fake Herdr; config checked by the real herdr-app)
+npm run test:live     # smoke tests against the running app (opens and closes a pane)
+```
+
+Changes start with a failing test; see `tests/AGENTS.md`.

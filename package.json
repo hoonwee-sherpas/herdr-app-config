@@ -1,0 +1,12 @@
+{
+  "name": "herdr-app-config",
+  "private": true,
+  "type": "module",
+  "description": "Tests for the mods in this config. Node 22.15+ (uses module.registerHooks); no dependencies.",
+  "scripts": {
+    "test": "node --import ./tests/setup.mjs --test 'tests/unit/*.test.mjs' 'tests/integration/*.test.mjs'",
+    "test:unit": "node --import ./tests/setup.mjs --test 'tests/unit/*.test.mjs'",
+    "test:integration": "node --import ./tests/setup.mjs --test 'tests/integration/*.test.mjs'",
+    "test:live": "HERDR_LIVE=1 node --import ./tests/setup.mjs --test 'tests/live/*.test.mjs'"
+  }
+}

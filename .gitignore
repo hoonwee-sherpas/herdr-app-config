@@ -5,6 +5,9 @@
 /*
 !/.gitignore
 !/README.md
+!/CLAUDE.md
+!/package.json
+!/tests/
 !/keys.json
 
 # Layouts: only our own (shipped ones are Herdr's).
