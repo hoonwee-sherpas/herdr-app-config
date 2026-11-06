@@ -13,6 +13,7 @@
 
 import { View, div, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse } from "./rough.js";
 import { appHome, readTextFile, writeTextFile, watchFolder, exec, theme, settings } from "herdr";
 
 const DIR = () => `${appHome()}/data/sketch`;
@@ -184,6 +185,8 @@ export default class Sketch extends View {
     this.fill = false;
     this.dashed = false;
     this.sel = [];          // selected shape ids
+    // The hand-drawn look (H), remembered; a shape with "rough": false stays clean.
+    this.rough = localStorage.getItem("rough") !== "false";
     this.spaceHeld = false; // Space down: a drag pans
     this.spaceAt = 0;       // Space's last key event (press or repeat)
     this.spaceRepeats = false;
@@ -323,6 +326,11 @@ export default class Sketch extends View {
     const fillable = this.selection().filter((s) => BOXY.has(s.type) && s.type !== "text");
     this.fill = fillable.length ? !fillable[0].fill : !this.fill;
     if (fillable.length) this.style(cx, () => ({ fill: this.fill ? COLORS[this.color][1] : null }), fillable);
+  }
+
+  toggleRough() {
+    this.rough = !this.rough;
+    localStorage.setItem("rough", String(this.rough));
   }
 
   setTool(tool) {
@@ -580,6 +588,7 @@ export default class Sketch extends View {
     if (tool) this.setTool(tool[0]);
     else if (digit >= 0) this.recolor(cx, digit);
     else if (k === "f") this.toggleFill(cx);
+    else if (k === "h") this.toggleRough();
     else if (k === "s") {
       this.dashed = many.length ? !many[0].dashed : !this.dashed;
       this.style(cx, { dashed: this.dashed || null });
@@ -616,15 +625,40 @@ export default class Sketch extends View {
     const width = Math.max(1, (s.width ?? 2) * z);
     const dash = (pb) => (s.dashed ? pb.dash_array([8 * z, 6 * z]) : pb);
     const layer = (pb, bg) => out.push(window.paint_path(pb.build(), bg).absolute().top(0).left(0).size_full());
+    const rough = this.rough && s.rough !== false;
+    // The rough strokes (world coordinates, seeded by the id) as one path on screen.
+    const sketchy = (strokes) => {
+      let pb = PathBuilder.stroke(width);
+      for (const st of strokes) {
+        const [fx, fy] = this.screen(st.from);
+        pb = pb.move_to(fx, fy);
+        for (const [cx, cy, tx, ty] of st.curves) {
+          const [qx, qy] = this.screen([cx, cy]), [ex, ey] = this.screen([tx, ty]);
+          pb = pb.curve_to(ex, ey, qx, qy);
+        }
+      }
+      return pb;
+    };
 
     if (SHAPE_PATH[s.type]) {
       const b = norm(s);
       if (b.w < 1 || b.h < 1) return;
       const [x, y] = this.screen([b.x, b.y]);
       const w = b.w * z, h = b.h * z;
-      const make = (pb) => (s.type === "rect" ? roundRect(pb, x, y, w, h, Math.min(10 * z, w / 4, h / 4)) : SHAPE_PATH[s.type](pb, x, y, w, h));
+      // Rough boxes have square corners, like a quick pen box.
+      const radius = rough ? 0 : Math.min(10 * z, w / 4, h / 4);
+      const make = (pb) => (s.type === "rect" ? roundRect(pb, x, y, w, h, radius) : SHAPE_PATH[s.type](pb, x, y, w, h));
       if (s.fill) layer(make(PathBuilder.fill()), Background.solid(fillFor(s.fill, this.dark)));
-      layer(dash(make(PathBuilder.stroke(width))), ink);
+      if (rough) {
+        const rand = rng(s.id);
+        const strokes = s.type === "ellipse" ? roughEllipse(b.x, b.y, b.w, b.h, rand)
+          : roughPolygon(s.type === "rect"
+            ? [[b.x, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h], [b.x, b.y + b.h]]
+            : [[b.x + b.w / 2, b.y], [b.x + b.w, b.y + b.h / 2], [b.x + b.w / 2, b.y + b.h], [b.x, b.y + b.h / 2]], rand);
+        layer(dash(sketchy(strokes)), ink);
+      } else {
+        layer(dash(make(PathBuilder.stroke(width))), ink);
+      }
       if (s.text) {
         out.push(div().absolute().left(x).top(y).w(w).h(h).flex().items_center().justify_center().px(6 * z)
           .text_size((s.fontSize ?? 16) * z).text_color(ink).text_center().overflow_hidden()
@@ -640,8 +674,22 @@ export default class Sketch extends View {
       }
       return;
     }
-    const pts = (s.type === "pen" ? s.points ?? [] : points(s, byId)).map((p) => this.screen(p));
+    const world = s.type === "pen" ? s.points ?? [] : points(s, byId);
+    const pts = world.map((p) => this.screen(p));
     if (pts.length < 2) return;
+    if (rough && s.type !== "pen") {
+      const rand = rng(s.id);
+      layer(dash(sketchy(roughPolyline(world, rand))), ink);
+      if (s.type === "arrow") {
+        const [ax, ay] = world[world.length - 2], [bx, by] = world[world.length - 1];
+        const a = Math.atan2(by - ay, bx - ax), l = Math.min(14, Math.hypot(bx - ax, by - ay) / 2);
+        const tip = [bx, by];
+        const wing = (t) => [bx - l * Math.cos(a + t), by - l * Math.sin(a + t)];
+        layer(sketchy([...roughLine(wing(-0.45), tip, rand), ...roughLine(tip, wing(0.45), rand)]), ink);
+      }
+      this.lineLabel(s, pts, ink, out);
+      return;
+    }
     let pb = PathBuilder.stroke(width).move_to(pts[0][0], pts[0][1]);
     if (s.type === "pen") {
       for (let i = 1; i < pts.length - 1; i++) {
@@ -659,6 +707,12 @@ export default class Sketch extends View {
         .line_to(bx, by).line_to(bx - l * Math.cos(a + 0.45), by - l * Math.sin(a + 0.45));
       layer(head, ink);
     }
+    this.lineLabel(s, pts, ink, out);
+  }
+
+  // A line or arrow's label, at its middle (screen points).
+  lineLabel(s, pts, ink, out) {
+    const z = this.zoom;
     if (s.text) {
       const mid = pts[Math.floor(pts.length / 2) - (pts.length % 2 ? 0 : 1)], end = pts[Math.floor(pts.length / 2)];
       const mx = (mid[0] + end[0]) / 2, my = (mid[1] + end[1]) / 2;
@@ -741,6 +795,7 @@ export default class Sketch extends View {
         })))
       .child(div().w(8))
       .child(this.button("fill", "Fill F", first ? Boolean(first.fill) : this.fill, (cx) => this.toggleFill(cx)))
+      .child(this.button("rough", "Hand-drawn H", this.rough, () => this.toggleRough()))
       .child(div().flex_1())
       .child(div().text_size(11).text_color(t.dim).child(this.error ?? `${Math.round(this.zoom * 100)}%`))
       .child(this.button("fit", "Fit ⇧1", false, () => this.fit()));

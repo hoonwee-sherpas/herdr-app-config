@@ -17,7 +17,8 @@ Later shapes are drawn on top. Coordinates are world pixels; y grows downward.
 | `pen` | `points`: `[[x, y], ...]` (freehand) |
 
 Optional on every shape: `color` (ink, default `#1e1e1e`), `width` (stroke, default 2),
-`dashed: true`, `fontSize` (label size, default 16).
+`dashed: true`, `fontSize` (label size, default 16), `rough: false` (draw this shape with
+clean lines even when the hand-drawn look is on; the person toggles that look with H).
 
 Palette used by the toolbar (ink / fill): `#1e1e1e` / `#e9ecef`, `#e03131` / `#ffc9c9`,
 `#2f9e44` / `#b2f2bb`, `#1971c2` / `#a5d8ff`, `#f08c00` / `#ffd8a8`, `#9c36b5` / `#eebefa`.

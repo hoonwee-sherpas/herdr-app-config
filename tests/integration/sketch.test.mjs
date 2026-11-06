@@ -350,3 +350,69 @@ test("a pan in progress isn't cut off when Space goes stale mid-drag", async (t)
   moveTo(v, cx, 530, 520); up(v, cx, 530, 520);
   assert.deepEqual(v.pan, { x: 70, y: 60 });
 });
+
+// ---- hand-drawn look
+
+const opsOf = (v, id) => {
+  // The stroke paths drawn for one shape: render it alone.
+  const keep = v.shapes, sel = v.sel;
+  v.shapes = keep.filter((s) => s.id === id);
+  v.sel = []; // the selection outline is a path too
+  const paths = all(v.render(), (e) => e.kind === "path" && e.arg.path.mode === "stroke").map((e) => e.arg.path.ops);
+  v.shapes = keep; v.sel = sel;
+  return paths;
+};
+const kinds = (paths) => new Set(paths.flat().map((op) => op[0]));
+
+test("shapes are hand-drawn by default: wobbly curves, drawn twice", async () => {
+  const { v } = await mount([{ id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50 }]);
+  const paths = opsOf(v, "a");
+  assert.ok(kinds(paths).has("curve_to"));
+  assert.ok(!kinds(paths).has("arc_to"));
+  assert.equal(paths.flat().filter((op) => op[0] === "move_to").length, 8, "4 edges × 2 passes");
+});
+
+test("a shape's wobble is the same every frame, and moves with it", async () => {
+  const { v, cx } = await mount([{ id: "a", type: "ellipse", x: 0, y: 0, w: 100, h: 50 }]);
+  const before = opsOf(v, "a");
+  assert.deepEqual(opsOf(v, "a"), before, "same on a redraw");
+  drag(v, cx, at(50, 25), at(80, 45));
+  const after = opsOf(v, "a");
+  const shift = (paths) => paths.map((ops) => ops.map(([op, ...n]) => [op, ...n.map((x, i) => x - (i % 2 ? 20 : 30))]));
+  const near = (a, b) => a.every((ops, i) => ops.every((op, j) => op.every((x, k) => typeof x !== "number" || Math.abs(x - b[i][j][k]) < 1e-9)));
+  assert.ok(near(shift(after), before), "only moved, not redrawn differently");
+});
+
+test("two shapes of the same size wobble differently", async () => {
+  const { v } = await mount([
+    { id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50 },
+    { id: "b", type: "rect", x: 0, y: 0, w: 100, h: 50 },
+  ]);
+  assert.notDeepEqual(opsOf(v, "a"), opsOf(v, "b"));
+});
+
+test("H switches to clean shapes and back, and is remembered", async () => {
+  const { v, cx } = await mount([{ id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50 }]);
+  press(v, cx, "h");
+  assert.ok(kinds(opsOf(v, "a")).has("arc_to"), "clean rounded box");
+  const again = await mount([{ id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50 }]);
+  assert.ok(kinds(opsOf(again.v, "a")).has("arc_to"), "still clean after a reload");
+  press(again.v, again.cx, "h");
+  assert.ok(!kinds(opsOf(again.v, "a")).has("arc_to"));
+});
+
+test('"rough": false in the board keeps one shape clean', async () => {
+  const { v } = await mount([{ id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50, rough: false }]);
+  assert.ok(kinds(opsOf(v, "a")).has("arc_to"));
+});
+
+test("the wobble zooms with the drawing", async () => {
+  const { v } = await mount([{ id: "a", type: "diamond", x: 0, y: 0, w: 100, h: 60 }]);
+  const one = opsOf(v, "a");
+  v.zoom = 2;
+  const two = opsOf(v, "a");
+  // screen = world × zoom + 40, so zoom 2 is (zoom-1 screen − 40) × 2 + 40.
+  one.forEach((ops, i) => ops.forEach(([op, ...n], j) => n.forEach((x, k) => {
+    if (typeof x === "number") assert.ok(Math.abs((x - 40) * 2 + 40 - two[i][j][k + 1]) < 1e-9);
+  })));
+});
