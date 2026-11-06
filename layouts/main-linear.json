@@ -131,6 +131,38 @@
                       }
                     },
                     {
+                      "id": "github",
+                      "type": "column",
+                      "children": [
+                        {
+                          "id": "github-list",
+                          "type": "block",
+                          "content": {
+                            "mod": "github"
+                          },
+                          "size": {
+                            "weight": 3
+                          },
+                          "min": 120
+                        },
+                        {
+                          "id": "github-detail",
+                          "type": "block",
+                          "content": {
+                            "mod": "github",
+                            "props": {
+                              "view": "detail"
+                            }
+                          },
+                          "size": {
+                            "weight": 2
+                          },
+                          "min": 160,
+                          "hidden": true
+                        }
+                      ]
+                    },
+                    {
                       "id": "linear",
                       "type": "column",
                       "children": [

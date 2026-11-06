@@ -17,7 +17,7 @@ const herdrApp = (() => {
 })();
 
 test("the repo tracks at least the mods it ships", () => {
-  for (const m of ["linear-issues", "linear-search", "tabs-linear", "Sketch", "spaces-agents"]) assert.ok(tracked.includes(m), m);
+  for (const m of ["linear-issues", "linear-search", "tabs-linear", "Sketch", "spaces-agents", "github"]) assert.ok(tracked.includes(m), m);
 });
 
 for (const mod of tracked) {
@@ -45,6 +45,15 @@ test("keys.json is valid and every mod it opens exists", () => {
   for (const m of mods) assert.ok(modExists(m), `keys.json opens missing mod "${m}"`);
 });
 
+test("main-linear's root holds only the sidebar and the work area (no mod herdr docked there on its own)", () => {
+  const root = JSON.parse(read("layouts/main-linear.json"));
+  assert.deepEqual((root.root ?? root).children.map((c) => c.id), ["sidebar", "work"]);
+});
+
+test("⌘⇧G toggles the GitHub panel in main-linear", () => {
+  assert.equal(JSON.parse(read("keys.json"))["layout:main-linear"]["cmd-shift-g"], "tabs-linear.github");
+});
+
 test("main-linear.json is valid, its ids are unique, and every mod it shows exists", () => {
   const root = JSON.parse(read("layouts/main-linear.json"));
   const ids = [], mods = [];
@@ -56,6 +65,7 @@ test("main-linear.json is valid, its ids are unique, and every mod it shows exis
   assert.equal(new Set(ids).size, ids.length, "duplicate node ids");
   for (const m of mods) assert.ok(modExists(m), `layout shows missing mod "${m}"`);
   assert.ok(mods.includes("spaces-agents") && !mods.includes("agents"), "the sidebar uses the merged list");
+  assert.ok(ids.includes("github-list") && ids.includes("github-detail"), "the GitHub panel and its detail block");
 });
 
 test("no tracked file holds a Linear API key", () => {

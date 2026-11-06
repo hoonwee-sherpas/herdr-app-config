@@ -79,6 +79,7 @@
     "cmd-backspace": "send:\u0015"
   },
   "layout:main-linear": {
-    "cmd-shift-i": "tabs-linear.linear"
+    "cmd-shift-i": "tabs-linear.linear",
+    "cmd-shift-g": "tabs-linear.github"
   }
 }

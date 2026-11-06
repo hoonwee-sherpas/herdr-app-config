@@ -1,6 +1,6 @@
 # herdr-app config
 
-My Herdr app setup: a layout with a Linear panel, Linear
+My Herdr app setup: a layout with Linear and GitHub panels, Linear
 issue search, a Sketch whiteboard pane, and the keys for them. Herdr reads `~/.config/herdr-app` live, so
 changes show up as soon as the files are saved.
 
@@ -8,11 +8,12 @@ changes show up as soon as the files are saved.
 
 | Path | What it is |
 |---|---|
-| `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, Linear), with one Spaces list that shows each space's agents |
+| `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, GitHub, Linear), with one Spaces list that shows each space's agents |
 | `mods/spaces-agents/` | That sidebar list: a copy of Herdr's Spaces list with each space's agents (status, time in that state) listed under it; replaces the separate Agents list |
 | `mods/tabs-linear/` | The tab bar for that layout, with buttons that open the panel |
 | `mods/linear-issues/` | The Linear panel: issues assigned to you, grouped by project or state, matched to Herdr spaces by branch, plus an issue detail view |
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
+| `mods/github/` | The GitHub panel for the active space's repo (through `gh`): open pull requests (All / Mine / Review requested, search), closed ones 25 a page (All / Mine / Reviewed by me and the search run on GitHub, so they cover every page), Actions runs 30 a page grouped by workflow, and a detail view (a PR's reviews, checks, files, description and comments; a run's jobs, steps and failed log, with re-run and cancel). PRs link to their space or offer a worktree, and to their Linear issue. Toasts when CI fails on your PR, it gets a review, or your review is requested |
 | `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text; follows light/dark themes. The board is `data/sketch/board.json`, which agents can edit (format in `mods/Sketch/FORMAT.md`) |
 | `keys.json` | Key bindings, including the ones below |
 | `tests/`, `package.json` | Unit and integration tests for the mods (`npm test`); how to write them is in `tests/AGENTS.md` |
@@ -28,6 +29,7 @@ state, so `.gitignore` leaves it out.
 | ⌘I | Search Linear issues (popup) |
 | ⌘⇧I | Open or close the Linear panel (floating window outside `main-linear`) |
 | ⌘⇧L | Switch layout (pick `main-linear`) |
+| ⌘⇧G | Open or close the GitHub panel (`main-linear`) |
 | ⌘⇧E | Open a Sketch pane to the right (also the Sketch button in the tab bar) |
 
 In the search popup: ↵ shows details (and opens the Linear panel), ⌘↵ opens the
@@ -57,10 +59,13 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
    git checkout -f -t origin/main
    ```
 
-3. **Pick the layout:** ⌘⇧L → `main-linear`.
+3. **GitHub CLI.** The GitHub panel uses `gh`, logged in: `gh auth login`
+   (it needs the `repo` and `workflow` scopes; re-run and cancel use the latter).
 
-4. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
-   (and the same for `linear-issues`, `tabs-linear`, `Sketch` and `spaces-agents`), then `herdr-app status`,
+4. **Pick the layout:** ⌘⇧L → `main-linear`.
+
+5. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
+   (and the same for `linear-issues`, `tabs-linear`, `Sketch`, `spaces-agents` and `github`), then `herdr-app status`,
    which should list no errors.
 
 ## Things to know
@@ -71,7 +76,14 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
 - Mods can't import from each other, so `mods/linear-search/common.js` is a copy
   of `mods/linear-issues/common.js`. Change both together.
 - The two Linear mods share a cache in `shared.json` (`linear.mine`,
-  `linear.states`), which isn't committed.
+  `linear.workflowStates`), which isn't committed.
+- The GitHub panel follows the active space: its folder's `origin` picks the
+  repo. A space whose folder isn't a GitHub checkout shows a note instead.
+  Alerts only cover the repo the panel is showing.
+- The first time Herdr sees a new mod folder it docks a copy into the shown
+  layout unless the mod has a `mod.json` with `"place": "none"`. Add that file
+  before `main.js`; a test checks `main-linear`'s root holds only the sidebar
+  and the work area.
 
 ## Tests
 

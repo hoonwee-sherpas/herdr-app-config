@@ -46,3 +46,25 @@ test("a Sketch pane in another tab doesn't count", async () => {
   byId(v.render(), "pane-sketch").handlers.on_click({}, cx);
   assert.equal(host.ran("pane.split").length, 1);
 });
+
+test("a GitHub panel button sits between Changes and Linear, and opens the GitHub panel", async () => {
+  const { v, cx } = await mount();
+  const order = [...walk(v.render())].map((e) => e.props.id).filter((id) => /^(panel|pane)-/.test(String(id)));
+  assert.deepEqual(order.slice(-3), ["panel-github", "panel-linear", "pane-sketch"]);
+  assert.ok(existsSync(new URL("../../mods/github/github.svg", import.meta.url)), "its icon exists");
+  byId(v.render(), "panel-github").handlers.on_click({}, cx);
+  assert.deepEqual(host.ran("layout.select"), [{ stack: "panel-body", child: "github" }]);
+  assert.deepEqual(host.ran("layout.show"), [{ id: "panel" }]);
+});
+
+test("the tabs-linear.github command opens the GitHub panel, and closes it when it's showing", async () => {
+  const { cx } = await mount();
+  host.command("github");
+  await cx.settle();
+  assert.deepEqual(host.ran("layout.select"), [{ stack: "panel-body", child: "github" }]);
+  host.layout.children[0].hidden = false;
+  host.layout.children[0].children[0].active = "github";
+  host.command("github");
+  await cx.settle();
+  assert.deepEqual(host.ran("layout.hide"), [{ id: "panel" }]);
+});

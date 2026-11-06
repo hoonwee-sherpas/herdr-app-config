@@ -12,8 +12,18 @@ export function el(kind, arg) {
       if (name === "then" || typeof name === "symbol") return undefined;
       return (...args) => {
         t.calls.push([name, args]);
-        if (name === "child") { if (args[0] != null && args[0] !== false) t.kids.push(args[0]); }
-        else if (name === "children") { for (const k of args[0] ?? []) if (k != null && k !== false) t.kids.push(k); }
+        // Like the host: a child must be an element, string, number or boolean;
+        // null or undefined throws ("child(value) expects an element…").
+        const bad = (k) => k === null || k === undefined;
+        if (name === "child") {
+          if (bad(args[0])) throw new TypeError(`child(value) expects an element, a string, or an entity; got ${args[0]}`);
+          if (args[0] !== false) t.kids.push(args[0]);
+        } else if (name === "children") {
+          for (const k of args[0] ?? []) {
+            if (bad(k)) throw new TypeError(`children(...) expects elements, strings or entities; got ${k}`);
+            if (k !== false) t.kids.push(k);
+          }
+        }
         // Slots (a Popover's trigger and content) are drawn by the component, but
         // a test should find what's in them, so they count as children here.
         else if (name === "trigger" || name === "content") { t.kids.push(args[0]); t.props[name] = args[0]; }

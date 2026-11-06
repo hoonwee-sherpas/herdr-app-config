@@ -15,13 +15,14 @@ export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
     this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
-    // "tabs-linear.linear" (a key): open or close the Linear panel.
+    // "tabs-linear.linear" / "tabs-linear.github" (keys): open or close that panel.
     cx.spawn(async () => {
       for (;;) {
-        if ((await nextCommand()) !== "linear") continue;
+        const which = await nextCommand();
+        if (which !== "linear" && which !== "github") continue;
         const panel = find(layout(), "panel"), body = find(layout(), "panel-body");
-        if (panel && !panel.hidden && body?.active === "linear") run("layout.hide", { id: "panel" });
-        else { run("layout.select", { stack: "panel-body", child: "linear" }); run("layout.show", { id: "panel" }); }
+        if (panel && !panel.hidden && body?.active === which) run("layout.hide", { id: "panel" });
+        else { run("layout.select", { stack: "panel-body", child: which }); run("layout.show", { id: "panel" }); }
       }
     });
   }
@@ -86,7 +87,7 @@ export default class Tabs extends View {
       ? Math.max(10, (root.traffic_lights[0] + 64) / settings().zoom - (sidebar?.hidden ? 0 : sidebar?.size?.px ?? 0))
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "linear"];
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "github", "linear"];
     this.syncPanel(space, panel, body, enabled);
     const panelButton = (id, label, icon) => {
       const on = panel && !panel.hidden && body?.active === id;
@@ -116,6 +117,7 @@ export default class Tabs extends View {
       .child(button("tab-new", "+", () => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 })))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
+      .child(panelButton("github", "GitHub", "mods/github/github.svg"))
       .child(panelButton("linear", "Linear", "mods/linear-issues/linear.svg"))
       .child(sketchButton())
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/tabs-linear/win-min.svg").size(16) : "−", () => run("window.minimize")))

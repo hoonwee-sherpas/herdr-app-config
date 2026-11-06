@@ -20,7 +20,7 @@ export const host = {
       layout: { id: "root", type: "row", children: [] },
       theme: { ...LIGHT }, settings: { zoom: 1 }, window: { active: true, platform: "macos" },
       props: {}, shared: {}, home: "/home/test", appHome: "/app",
-      runs: [], overlays: [], closedOverlays: [], execs: [], agentOrder: null,
+      runs: [], notices: [], overlays: [], closedOverlays: [], execs: [], agentOrder: null,
       files: new Map(), watchers: [], commands: [],
       exec: async () => ({ code: 0, stdout: "", stderr: "" }),
       hc: async () => ({ code: 0, stdout: "{}", stderr: "" }),
@@ -64,7 +64,7 @@ export async function writeTextFile(path, text, expected) {
 export const watchFolder = () => waiter(host.watchers);
 export const nextCommand = () => waiter(host.commands);
 export const playSound = () => null;
-export const notify = () => null;
+export const notify = (n) => { host.notices.push(n); return `n${host.notices.length}`; };
 export const pickFolder = async () => null;
 export const knownAgents = async () => [];
 export const themes = () => [];
