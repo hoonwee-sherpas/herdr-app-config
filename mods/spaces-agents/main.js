@@ -358,8 +358,8 @@ export default class Spaces extends View {
     const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
     return h_flex().id(`ag-${a.address}`).h(26).flex_none().pl(tree ? 52 : 35).pr(8).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
-      .when(a.focused, (el) => el.bg(t.raised))
-      .hover((s) => s.bg(t.hover))
+      .when(a.focused, (el) => el.bg(t.selected))
+      .when(!a.focused, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("pane.focus", { pane: a.pane }))
       .when(Boolean(pic), (el) => el.child(pic))
       .child(div().flex_1().min_w(0).truncate().text_color(idle ? t.muted : t.foreground).child(name))
@@ -500,7 +500,8 @@ export default class Spaces extends View {
   }
 
   row({ w, i, g, tree }, t) {
-    const on = w.active;
+    // One highlight at a time: the focused agent's row takes it from its space.
+    const on = w.active && !agents().some((a) => a.space === w.id && a.focused);
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";

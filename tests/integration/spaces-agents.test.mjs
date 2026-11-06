@@ -93,3 +93,19 @@ test("the narrow sidebar shows spaces only, with the expand button", async () =>
   assert.deepEqual(ids(root).filter((id) => id.startsWith("ag-")), []);
   assert.ok(byId(root, "collapse"));
 });
+
+test("the focused agent is the only highlighted row, not its space too", async () => {
+  const { v } = await mount();
+  const root = v.render();
+  assert.equal(byId(root, "ag-a1").props.bg, host.theme.selected);
+  assert.equal(byId(root, "space-s1").props.bg, undefined, "the active space isn't highlighted while its agent is");
+});
+
+test("the active space stays highlighted when none of its agents is focused", async () => {
+  host.agents[0].focused = false;
+  host.panes[0].focused = false;
+  const { v } = await mount();
+  const root = v.render();
+  assert.equal(byId(root, "space-s1").props.bg, host.theme.selected);
+  assert.equal(byId(root, "ag-a1").props.bg, undefined);
+});
