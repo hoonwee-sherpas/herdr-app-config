@@ -18,6 +18,7 @@
 !/mods/linear-issues/
 !/mods/linear-search/
 !/mods/tabs-linear/
+!/mods/Sketch/
 /mods/*/gpui-kit.d.ts
 /mods/*/herdr.d.ts
 /mods/*/jsconfig.json

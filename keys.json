@@ -58,7 +58,14 @@
     "ctrl-8": "space.select:8",
     "ctrl-9": "space.select:9",
     "cmd-shift-i": "mod.open:linear-issues",
-    "cmd-i": "mod.open:linear-search"
+    "cmd-i": "mod.open:linear-search",
+    "cmd-shift-e": {
+      "command": "pane.split",
+      "args": {
+        "direction": "right",
+        "mod": "Sketch"
+      }
+    }
   },
   "terminal": {
     "cmd-c": "terminal.copy",

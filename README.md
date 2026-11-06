@@ -1,7 +1,7 @@
 # herdr-app config
 
 My Herdr app setup: a layout with a Linear panel, Linear
-issue search, and the keys for them. Herdr reads `~/.config/herdr-app` live, so
+issue search, a Sketch whiteboard pane, and the keys for them. Herdr reads `~/.config/herdr-app` live, so
 changes show up as soon as the files are saved.
 
 ## What's here
@@ -12,6 +12,7 @@ changes show up as soon as the files are saved.
 | `mods/tabs-linear/` | The tab bar for that layout, with buttons that open the panel |
 | `mods/linear-issues/` | The Linear panel: issues assigned to you, grouped by project or state, matched to Herdr spaces by branch, plus an issue detail view |
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
+| `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text; follows light/dark themes. The board is `data/sketch/board.json`, which agents can edit (format in `mods/Sketch/FORMAT.md`) |
 | `keys.json` | Key bindings, including the ones below |
 
 Everything else in `~/.config/herdr-app` is written by Herdr or is personal
@@ -24,6 +25,7 @@ state, so `.gitignore` leaves it out.
 | ⌘I | Search Linear issues (popup) |
 | ⌘⇧I | Open or close the Linear panel (floating window outside `main-linear`) |
 | ⌘⇧L | Switch layout (pick `main-linear`) |
+| ⌘⇧E | Open a Sketch pane to the right (also the Sketch button in the tab bar) |
 
 In the search popup: ↵ shows details (and opens the Linear panel), ⌘↵ opens the
 issue in Linear, ⌘G goes to the issue's space or makes a worktree for its branch,
@@ -55,7 +57,7 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
 3. **Pick the layout:** ⌘⇧L → `main-linear`.
 
 4. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
-   (and the same for `linear-issues` and `tabs-linear`), then `herdr-app status`,
+   (and the same for `linear-issues`, `tabs-linear` and `Sketch`), then `herdr-app status`,
    which should list no errors.
 
 ## Things to know
