@@ -28,6 +28,9 @@ const moveTo = (v, cx, x, y) => canvas(v).handlers.on_mouse_move(mouse(x, y), cx
 const up = (v, cx, x, y) => canvas(v).handlers["on_mouse_up:left"](mouse(x, y), cx);
 const drag = (v, cx, [x0, y0], [x1, y1]) => { down(v, cx, x0, y0); moveTo(v, cx, x1, y1); up(v, cx, x1, y1); };
 const press = (v, cx, k) => v.render().handlers.on_key_down(key(k), cx);
+const release = (v, cx, k) => v.render().handlers.on_key_up(key(k), cx);
+// World (x, y) at zoom 1 and the starting pan (40, 40), in screen points.
+const at = (x, y, zoom = 1) => [(x + 40) * zoom, (y + 40) * zoom];
 
 test("loads the board file and draws its shapes", async () => {
   const { v } = await mount([{ id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50, text: "API" }]);
@@ -45,7 +48,7 @@ test("R then a drag draws a box where the mouse went", async () => {
   // The view starts panned 40px in.
   assert.deepEqual({ type: s.type, x: s.x, y: s.y, w: s.w, h: s.h }, { type: "rect", x: 60, y: 60, w: 200, h: 100 });
   assert.equal(v.tool, "select");
-  assert.equal(v.sel, s.id);
+  assert.deepEqual(v.sel, [s.id]);
 });
 
 test("with herdr zoomed (1.1), clicks land on the shape under the pointer", async () => {
@@ -55,10 +58,11 @@ test("with herdr zoomed (1.1), clicks land on the shape under the pointer", asyn
   // Read as unzoomed points, that's world (108.5, 110.7): outside the box.
   down(v, cx, 148.5, 150.7);
   up(v, cx, 148.5, 150.7);
-  assert.equal(v.sel, "a");
-  // Just below it misses.
+  assert.deepEqual(v.sel, ["a"]);
+  // Just below it misses (and clears the selection).
   down(v, cx, 99, 1.1 * (40 + 108));
-  assert.equal(v.sel, null);
+  up(v, cx, 99, 1.1 * (40 + 108));
+  assert.deepEqual(v.sel, []);
 });
 
 test("with herdr zoomed (1.1), a box is drawn under the pointer", async () => {
@@ -139,7 +143,7 @@ test("deleting a box detaches arrows from it", async () => {
     { id: "x", type: "arrow", from: "a", to: "b", points: [[50, 56], [50, 194]] },
   ]);
   down(v, cx, 90, 65); up(v, cx, 90, 65);
-  assert.equal(v.sel, "a");
+  assert.deepEqual(v.sel, ["a"]);
   press(v, cx, "backspace");
   const arrow = v.shapes.find((s) => s.id === "x");
   assert.equal(v.shapes.some((s) => s.id === "a"), false);
@@ -164,4 +168,122 @@ test("in a dark theme the paper is the theme's and default ink turns light", asy
   assert.equal(byId(root, "sketch-canvas").props.bg, DARK.background);
   const strokes = all(root, (e) => e.kind === "path").map((e) => e.arg.background);
   assert.ok(strokes.includes(inkFor("#1e1e1e", true)));
+});
+
+// ---- selecting several shapes
+
+const three = () => [
+  { id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50 },
+  { id: "b", type: "rect", x: 200, y: 0, w: 100, h: 50 },
+  { id: "c", type: "rect", x: 0, y: 300, w: 100, h: 50 },
+  { id: "x", type: "arrow", from: "a", to: "c", points: [[50, 56], [50, 294]] },
+];
+
+test("dragging on empty space selects the shapes wholly inside the box", async () => {
+  host.settings.zoom = 1.1;
+  const { v, cx } = await mount(three());
+  // From above-left of a to below-right of b: a and b are inside; c and the arrow (reaching c) aren't.
+  drag(v, cx, at(-20, -20, 1.1), at(320, 70, 1.1));
+  assert.deepEqual([...v.sel].sort(), ["a", "b"]);
+  assert.deepEqual(v.pan, { x: 40, y: 40 }, "it didn't pan");
+});
+
+test("the selection box is drawn while dragging, and gone after", async () => {
+  const { v, cx } = await mount(three());
+  down(v, cx, ...at(-20, -20));
+  moveTo(v, cx, ...at(150, 150));
+  assert.ok(byId(v.render(), "marquee"), "box shown");
+  up(v, cx, ...at(150, 150));
+  assert.equal(byId(v.render(), "marquee"), null);
+});
+
+test("a click on empty space clears the selection", async () => {
+  const { v, cx } = await mount(three());
+  drag(v, cx, at(-20, -20), at(320, 70));
+  down(v, cx, ...at(500, 500)); up(v, cx, ...at(500, 500));
+  assert.deepEqual(v.sel, []);
+});
+
+test("⇧-click adds a shape to the selection, and takes it out again", async () => {
+  const { v, cx } = await mount(three());
+  const shift = { modifiers: { shift: true, control: false, alt: false, platform: false, function: false } };
+  down(v, cx, ...at(50, 25)); up(v, cx, ...at(50, 25));
+  down(v, cx, ...at(250, 25), shift); up(v, cx, ...at(250, 25));
+  assert.deepEqual(v.sel, ["a", "b"]);
+  down(v, cx, ...at(50, 25), shift); up(v, cx, ...at(50, 25));
+  assert.deepEqual(v.sel, ["b"]);
+});
+
+test("dragging one of several selected shapes moves them all, in one undo step", async () => {
+  const { v, cx } = await mount(three());
+  drag(v, cx, at(-20, -20), at(320, 70));
+  drag(v, cx, at(50, 25), at(80, 125));
+  const pos = (id) => { const s = v.shapes.find((x) => x.id === id); return [s.x, s.y]; };
+  assert.deepEqual([pos("a"), pos("b"), pos("c")], [[30, 100], [230, 100], [0, 300]]);
+  press(v, cx, "cmd-z");
+  assert.deepEqual([pos("a"), pos("b")], [[0, 0], [200, 0]]);
+});
+
+test("⌫ deletes every selected shape and detaches arrows from them", async () => {
+  const { v, cx } = await mount(three());
+  drag(v, cx, at(-20, -20), at(320, 70));
+  press(v, cx, "backspace");
+  assert.deepEqual(v.shapes.map((s) => s.id), ["c", "x"]);
+  assert.equal(v.shapes.find((s) => s.id === "x").from, undefined);
+  assert.deepEqual(v.sel, []);
+});
+
+test("a color applies to every selected shape, in one undo step", async () => {
+  const { v, cx } = await mount(three());
+  drag(v, cx, at(-20, -20), at(320, 70));
+  press(v, cx, "2");
+  assert.deepEqual(v.shapes.map((s) => s.color ?? null), ["#e03131", "#e03131", null, null]);
+  press(v, cx, "cmd-z");
+  assert.deepEqual(v.shapes.map((s) => s.color ?? null), [null, null, null, null]);
+});
+
+test("Esc clears a selection of several", async () => {
+  const { v, cx } = await mount(three());
+  drag(v, cx, at(-20, -20), at(320, 70));
+  press(v, cx, "escape");
+  assert.deepEqual(v.sel, []);
+});
+
+test("holding Space while dragging pans instead of selecting", async () => {
+  const { v, cx } = await mount(three());
+  press(v, cx, "space");
+  drag(v, cx, [500, 500], [530, 520]);
+  release(v, cx, "space");
+  assert.deepEqual(v.pan, { x: 70, y: 60 });
+  assert.deepEqual(v.sel, []);
+  // Released: dragging selects again (the view is now panned to 70, 60).
+  drag(v, cx, [-20 + 70, -20 + 60], [320 + 70, 70 + 60]);
+  assert.equal(v.sel.length, 2);
+});
+
+test("the middle button still pans", async () => {
+  const { v, cx } = await mount(three());
+  const c = canvas(v);
+  c.handlers["on_mouse_down:middle"](mouse(500, 500, { button: "middle" }), cx);
+  canvas(v).handlers.on_mouse_move(mouse(510, 530), cx);
+  canvas(v).handlers["on_mouse_up:middle"](mouse(510, 530), cx);
+  assert.deepEqual(v.pan, { x: 50, y: 70 });
+});
+
+test("an arrow moved with both its shapes stays attached; moved alone, it lets go where it is", async () => {
+  const { v, cx } = await mount(three());
+  // a, c and the arrow between them, moved together.
+  drag(v, cx, at(-20, -20), at(120, 370));
+  assert.deepEqual([...v.sel].sort(), ["a", "c", "x"]);
+  drag(v, cx, at(50, 25), at(450, 25));
+  const x = () => v.shapes.find((s) => s.id === "x");
+  assert.equal(x().from, "a");
+  assert.equal(x().to, "c");
+  // Now the arrow on its own: it detaches, starting from where it was drawn.
+  down(v, cx, ...at(450, 200)); up(v, cx, ...at(450, 200));
+  assert.deepEqual(v.sel, ["x"]);
+  drag(v, cx, at(450, 200), at(460, 200));
+  assert.equal(x().from, undefined);
+  assert.equal(x().to, undefined);
+  assert.deepEqual(x().points, [[460, 56], [460, 294]]);
 });

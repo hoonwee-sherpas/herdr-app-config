@@ -6,8 +6,10 @@
 // Keys: V select · R box · O ellipse · D diamond · A arrow · L line · P pen ·
 // T text · 1–6 color · F fill · S dashed · ⌫ delete · ↵ / double-click edit
 // text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect.
-// Mouse: drag empty space (or middle button) to pan, scroll to pan, ⌘ or
-// ctrl + scroll to zoom. Drag the bottom-right handle to resize.
+// Mouse: drag empty space to select the shapes inside a box, ⇧-click to add
+// or remove one, drag a selected shape to move the whole selection. Hold Space
+// (or the middle button) and drag to pan, scroll to pan, ⌘ or ctrl + scroll to
+// zoom. Drag a lone shape's bottom-right handle to resize.
 
 import { View, div, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
@@ -181,7 +183,8 @@ export default class Sketch extends View {
     this.color = 0;
     this.fill = false;
     this.dashed = false;
-    this.sel = null;
+    this.sel = [];          // selected shape ids
+    this.spaceHeld = false; // Space down: a drag pans
     this.drag = null;
     this.pan = { x: 40, y: 40 };
     this.zoom = 1;
@@ -219,7 +222,7 @@ export default class Sketch extends View {
           const next = parse(text);
           this.remember();
           this.shapes = next;
-          if (this.sel && !next.some((s) => s.id === this.sel)) this.sel = null;
+          this.sel = this.sel.filter((id) => next.some((s) => s.id === id));
           this.error = null;
         } catch (e) {
           this.error = `board.json: ${e?.message ?? e}`;
@@ -232,7 +235,10 @@ export default class Sketch extends View {
   // ---- state
 
   byId() { return new Map(this.shapes.map((s) => [s.id, s])); }
-  selected() { return this.shapes.find((s) => s.id === this.sel) ?? null; }
+  // Every selected shape, in drawing order.
+  selection() { return this.shapes.filter((s) => this.sel.includes(s.id)); }
+  // The selected shape when there's exactly one (resize, edit text).
+  selected() { return this.sel.length === 1 ? this.shapes.find((s) => s.id === this.sel[0]) ?? null : null; }
   // Mouse events come in screen points; the canvas lays out in herdr's zoomed
   // pixels (settings.zoom), so convert before comparing with shapes.
   scale() { return Number(settings()?.zoom) || 1; }
@@ -252,7 +258,7 @@ export default class Sketch extends View {
     if (!from.length) return;
     to.push(JSON.stringify(this.shapes));
     this.shapes = JSON.parse(from.pop());
-    if (!this.selected()) this.sel = null;
+    this.sel = this.sel.filter((id) => this.shapes.some((s) => s.id === id));
     this.save(cx);
   }
 
@@ -293,7 +299,7 @@ export default class Sketch extends View {
 
   startEdit(s) {
     this.editing = s.id;
-    this.sel = s.id;
+    this.sel = [s.id];
     this.input.set_value(s.text ?? "");
     this.input.focus();
   }
@@ -307,29 +313,38 @@ export default class Sketch extends View {
     if ((s.text ?? "") === text && text) return;
     this.remember();
     if (text) s.text = text; else delete s.text;
-    if (s.type === "text" && !text) { this.shapes = this.shapes.filter((x) => x !== s); this.sel = null; }
+    if (s.type === "text" && !text) { this.shapes = this.shapes.filter((x) => x !== s); this.sel = []; }
     this.save(cx);
   }
 
   toggleFill(cx) {
-    const s = this.selected();
-    this.fill = s ? !s.fill : !this.fill;
-    if (s && BOXY.has(s.type) && s.type !== "text") this.style(cx, { fill: this.fill ? COLORS[this.color][1] : null });
+    const fillable = this.selection().filter((s) => BOXY.has(s.type) && s.type !== "text");
+    this.fill = fillable.length ? !fillable[0].fill : !this.fill;
+    if (fillable.length) this.style(cx, () => ({ fill: this.fill ? COLORS[this.color][1] : null }), fillable);
   }
 
   setTool(tool) {
     this.tool = tool;
-    if (tool !== "select") this.sel = null;
+    if (tool !== "select") this.sel = [];
   }
 
-  // Applies a style change to the selection too.
-  style(cx, patch) {
-    const s = this.selected();
-    if (!s) return;
+  // Applies a style change to every selected shape (or `only`), as one undo
+  // step. `patch` is an object, or a function of the shape giving one.
+  style(cx, patch, only = this.selection()) {
+    if (!only.length) return;
     this.remember();
-    Object.assign(s, patch);
-    for (const k of Object.keys(patch)) if (patch[k] == null) delete s[k];
+    for (const s of only) {
+      const p = typeof patch === "function" ? patch(s) : patch;
+      Object.assign(s, p);
+      for (const k of Object.keys(p)) if (p[k] == null) delete s[k];
+    }
     this.save(cx);
+  }
+
+  // A color for the selection: ink, and the matching fill where there is one.
+  recolor(cx, i) {
+    this.color = i;
+    this.style(cx, (s) => ({ color: i ? COLORS[i][0] : null, ...(s.fill ? { fill: COLORS[i][1] } : {}) }));
   }
 
   fit() {
@@ -356,6 +371,11 @@ export default class Sketch extends View {
     const ink = COLORS[this.color][0];
     const style = { ...(this.color ? { color: ink } : {}), ...(this.dashed ? { dashed: true } : {}) };
 
+    if (this.spaceHeld) {
+      this.drag = { kind: "pan", start: local, pan: { ...this.pan } };
+      return;
+    }
+
     if (this.tool === "select") {
       const sel = this.selected();
       if (sel && BOXY.has(sel.type) && sel.type !== "text") {
@@ -367,13 +387,19 @@ export default class Sketch extends View {
         }
       }
       const s = this.hitAt(p);
+      const shift = Boolean(e.modifiers?.shift);
       if (s && e.click_count >= 2 && BOXY.has(s.type)) { this.startEdit(s); return; }
+      if (s && shift) {
+        this.sel = this.sel.includes(s.id) ? this.sel.filter((id) => id !== s.id) : [...this.sel, s.id];
+        return;
+      }
       if (s) {
-        this.sel = s.id;
-        this.drag = { kind: "move", before: JSON.stringify(this.shapes), s, start: p, orig: JSON.parse(JSON.stringify(s)) };
+        if (!this.sel.includes(s.id)) this.sel = [s.id];
+        this.drag = { ...this.moving(p), clicked: s.id };
       } else {
-        this.sel = null;
-        this.drag = { kind: "pan", start: local, pan: { ...this.pan } };
+        // A box from here selects what it covers; ⇧ adds to the selection.
+        this.drag = { kind: "marquee", start: p, end: p, base: shift ? [...this.sel] : [] };
+        if (!shift) this.sel = [];
       }
       return;
     }
@@ -393,6 +419,20 @@ export default class Sketch extends View {
     this.drag = { kind: "draw", s, start: p };
   }
 
+  // A drag that moves the selection. Each shape remembers where it started; an
+  // arrow keeps its ends attached only to shapes moving with it, so it starts
+  // from the points it's drawn at now.
+  moving(p) {
+    const byId = this.byId();
+    const moving = new Set(this.sel);
+    const items = this.selection().map((s) => {
+      const orig = JSON.parse(JSON.stringify(s));
+      if (s.from || s.to) orig.points = points(s, byId);
+      return { s, orig, keep: { from: moving.has(s.from), to: moving.has(s.to) } };
+    });
+    return { kind: "move", before: JSON.stringify(this.shapes), start: p, items };
+  }
+
   move(e, cx) {
     this.measure(e);
     const d = this.drag;
@@ -402,13 +442,18 @@ export default class Sketch extends View {
     const p = this.world(l);
     if (d.kind === "pan") {
       this.pan = { x: d.pan.x + l.x - d.start.x, y: d.pan.y + l.y - d.start.y };
+    } else if (d.kind === "marquee") {
+      d.end = p;
     } else if (d.kind === "move") {
       const dx = p[0] - d.start[0], dy = p[1] - d.start[1];
-      if ("x" in d.orig) { d.s.x = d.orig.x + dx; d.s.y = d.orig.y + dy; }
-      if (d.orig.points) {
-        d.s.points = d.orig.points.map((q) => [q[0] + dx, q[1] + dy]);
-        // Moving an arrow by hand detaches it.
-        delete d.s.from; delete d.s.to;
+      for (const { s, orig, keep } of d.items) {
+        if ("x" in orig) { s.x = orig.x + dx; s.y = orig.y + dy; }
+        if (orig.points) {
+          s.points = orig.points.map((q) => [q[0] + dx, q[1] + dy]);
+          // An end attached to a shape that isn't moving lets go.
+          if (!keep.from) delete s.from;
+          if (!keep.to) delete s.to;
+        }
       }
     } else if (d.kind === "resize") {
       d.s.x = d.b.x; d.s.y = d.b.y;
@@ -440,7 +485,21 @@ export default class Sketch extends View {
     this.drag = null;
     if (!d) return;
     if (d.kind === "pan") return;
+    if (d.kind === "marquee") {
+      const [x0, x1] = [d.start[0], d.end[0]].sort((a, b) => a - b);
+      const [y0, y1] = [d.start[1], d.end[1]].sort((a, b) => a - b);
+      if ((x1 - x0) * this.zoom < 3 && (y1 - y0) * this.zoom < 3) return;
+      const byId = this.byId();
+      const inside = this.shapes.filter((s) => {
+        const b = bbox(s, byId);
+        return b.x >= x0 && b.y >= y0 && b.x + b.w <= x1 && b.y + b.h <= y1;
+      }).map((s) => s.id);
+      this.sel = [...new Set([...d.base, ...inside])];
+      return;
+    }
     if (d.kind === "move" || d.kind === "resize") {
+      // A click (no drag) on a shape in a larger selection picks just that one.
+      if (d.kind === "move" && JSON.stringify(this.shapes) === d.before && d.clicked) this.sel = [d.clicked];
       if (JSON.stringify(this.shapes) !== d.before) {
         this.undo.push(d.before);
         this.redo = [];
@@ -458,13 +517,13 @@ export default class Sketch extends View {
       if (A) s.from = A.id;
       if (B && B !== A) s.to = B.id;
       this.tool = "select";
-      this.sel = s.id;
+      this.sel = [s.id];
     } else {
       Object.assign(s, norm(s));
       // A click without a drag makes a default-size shape.
       if (s.w * this.zoom < 4 && s.h * this.zoom < 4) { s.w = 160; s.h = 72; s.x -= 80; s.y -= 36; }
       this.tool = "select";
-      this.sel = s.id;
+      this.sel = [s.id];
     }
     this.save(cx);
   }
@@ -487,6 +546,12 @@ export default class Sketch extends View {
 
   key(e, cx) {
     const k = e.keystroke;
+    if (k === "space" && !this.editing) {
+      this.spaceHeld = true;
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
     if (this.editing) {
       if (k === "escape") { this.finishEdit(cx); cx.stop_propagation(); cx.notify(); }
       return;
@@ -494,29 +559,35 @@ export default class Sketch extends View {
     const tool = TOOLS.find((t) => t[1] === k);
     const digit = /^[1-6]$/.test(k) ? Number(k) - 1 : -1;
     const s = this.selected();
+    const many = this.selection();
     if (tool) this.setTool(tool[0]);
-    else if (digit >= 0) {
-      this.color = digit;
-      if (s) this.style(cx, { color: digit ? COLORS[digit][0] : null, ...(s.fill ? { fill: COLORS[digit][1] } : {}) });
-    } else if (k === "f") this.toggleFill(cx);
+    else if (digit >= 0) this.recolor(cx, digit);
+    else if (k === "f") this.toggleFill(cx);
     else if (k === "s") {
-      this.dashed = s ? !s.dashed : !this.dashed;
-      if (s) this.style(cx, { dashed: this.dashed || null });
-    } else if ((k === "backspace" || k === "delete") && s) {
+      this.dashed = many.length ? !many[0].dashed : !this.dashed;
+      this.style(cx, { dashed: this.dashed || null });
+    } else if ((k === "backspace" || k === "delete") && many.length) {
       this.remember();
-      this.shapes = this.shapes.filter((x) => x !== s);
-      for (const x of this.shapes) { if (x.from === s.id) delete x.from; if (x.to === s.id) delete x.to; }
-      this.sel = null;
+      const gone = new Set(this.sel);
+      this.shapes = this.shapes.filter((x) => !gone.has(x.id));
+      for (const x of this.shapes) { if (gone.has(x.from)) delete x.from; if (gone.has(x.to)) delete x.to; }
+      this.sel = [];
       this.save(cx);
     } else if (k === "enter" && s && BOXY.has(s.type)) this.startEdit(s);
     else if (k === "cmd-z") this.restore(this.undo, this.redo, cx);
     else if (k === "cmd-shift-z") this.restore(this.redo, this.undo, cx);
     else if (k === "shift-1" || k === "!" || e.key_char === "!") this.fit();
     else if (k === "escape") {
-      if (this.sel) this.sel = null;
+      if (this.sel.length) this.sel = [];
       else if (this.tool !== "select") this.tool = "select";
     } else return;
     cx.stop_propagation();
+    cx.notify();
+  }
+
+  keyUp(e, cx) {
+    if (e.keystroke !== "space" && e.key !== "space") return;
+    this.spaceHeld = false;
     cx.notify();
   }
 
@@ -579,15 +650,27 @@ export default class Sketch extends View {
     }
   }
 
-  selection(byId, out) {
+  drawSelection(byId, out) {
+    for (const s of this.selection()) {
+      const b = bbox(s, byId);
+      const [x, y] = this.screen([b.x, b.y]);
+      const w = b.w * this.zoom, h = b.h * this.zoom;
+      out.push(window.paint_path(PathBuilder.stroke(1).dash_array([4, 3]).add_polygon(
+        [[x - 5, y - 5], [x + w + 5, y - 5], [x + w + 5, y + h + 5], [x - 5, y + h + 5]], true).build(), SELECT)
+        .absolute().top(0).left(0).size_full());
+    }
+    const d = this.drag;
+    if (d?.kind === "marquee") {
+      const [ax, ay] = this.screen(d.start), [bx, by] = this.screen(d.end);
+      out.push(div().id("marquee").absolute().left(Math.min(ax, bx)).top(Math.min(ay, by))
+        .w(Math.abs(bx - ax)).h(Math.abs(by - ay)).border_1().border_color(SELECT).bg(`${SELECT}1f`));
+    }
+    // Resizing is for one shape at a time.
     const s = this.selected();
     if (!s) return;
     const b = bbox(s, byId);
     const [x, y] = this.screen([b.x, b.y]);
     const w = b.w * this.zoom, h = b.h * this.zoom;
-    out.push(window.paint_path(PathBuilder.stroke(1).dash_array([4, 3]).add_polygon(
-      [[x - 5, y - 5], [x + w + 5, y - 5], [x + w + 5, y + h + 5], [x - 5, y + h + 5]], true).build(), SELECT)
-      .absolute().top(0).left(0).size_full());
     if (BOXY.has(s.type) && s.type !== "text") {
       out.push(div().absolute().left(x + w - HANDLE / 2).top(y + h - HANDLE / 2).size(HANDLE)
         .bg(this.t.background).border_1().border_color(SELECT).rounded(2));
@@ -623,10 +706,10 @@ export default class Sketch extends View {
     const byId = this.byId();
     const layers = [];
     for (const s of this.shapes) this.paint(s, byId, layers);
-    this.selection(byId, layers);
+    this.drawSelection(byId, layers);
     this.editor(layers);
-    const s = this.selected();
-    const cursor = this.tool === "select" ? (this.drag?.kind === "pan" ? "grabbing" : "default") : "crosshair";
+    const first = this.selection()[0];
+    const cursor = this.drag?.kind === "pan" ? "grabbing" : this.spaceHeld ? "grab" : this.tool === "select" ? "default" : "crosshair";
 
     const toolbar = h_flex().flex_none().flex_wrap().min_h(40).py(6).px(10).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .children(TOOLS.map(([name, key, label]) => this.button(`tool-${name}`, `${label} ${key.toUpperCase()}`, this.tool === name, () => this.setTool(name))))
@@ -635,14 +718,12 @@ export default class Sketch extends View {
         .border_2().border_color(this.color === i ? SELECT : t.chrome)
         .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
         .on_click((_e, cx) => {
-          this.color = i;
-          const s = this.selected();
-          if (s) this.style(cx, { color: i ? ink : null, ...(s.fill ? { fill: COLORS[i][1] } : {}) });
+          this.recolor(cx, i);
           this.handle.focus();
           cx.notify();
         })))
       .child(div().w(8))
-      .child(this.button("fill", "Fill F", s ? Boolean(s.fill) : this.fill, (cx) => this.toggleFill(cx)))
+      .child(this.button("fill", "Fill F", first ? Boolean(first.fill) : this.fill, (cx) => this.toggleFill(cx)))
       .child(div().flex_1())
       .child(div().text_size(11).text_color(t.dim).child(this.error ?? `${Math.round(this.zoom * 100)}%`))
       .child(this.button("fit", "Fit ⇧1", false, () => this.fit()));
@@ -650,6 +731,7 @@ export default class Sketch extends View {
     const canvas = div().id("sketch-canvas").relative().flex_1().min_h(0).overflow_hidden().bg(t.background)
       .when(cursor === "crosshair", (el) => el.cursor_crosshair())
       .when(cursor === "grabbing", (el) => el.cursor_grabbing())
+      .when(cursor === "grab", (el) => el.cursor_grab())
       .on_mouse_down("left", (e, cx) => { this.down(e, cx); cx.notify(); })
       .on_mouse_down("middle", (e, cx) => {
         cx.stop_propagation();
@@ -666,11 +748,12 @@ export default class Sketch extends View {
 
     return v_flex().id("sketch").track_focus(this.handle).size_full().bg(t.background).overflow_hidden()
       .on_key_down((e, cx) => this.key(e, cx))
+      .on_key_up((e, cx) => this.keyUp(e, cx))
       .child(toolbar)
       .child(canvas)
       .child(h_flex().flex_none().h(24).px(10).items_center().gap(12).border_t(1).border_color(t.border).bg(t.chrome)
         .text_size(11).text_color(t.dim)
-        .child("drag empty space to pan · ⌘ scroll to zoom · double-click to add text · ⇧ snaps · S dashed · ⌫ delete · ⌘Z undo")
+        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌫ delete · ⌘Z undo")
         .child(div().flex_1())
         .child("data/sketch/board.json"));
   }
