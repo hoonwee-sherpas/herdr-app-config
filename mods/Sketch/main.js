@@ -5,7 +5,8 @@
 //
 // Keys: V select · R box · O ellipse · D diamond · A arrow · L line · P pen ·
 // T text · I insert images · ⌘V paste an image · 1–6 color · F fill · S dashed ·
-// ⌫ delete · ↵ / double-click edit text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect.
+// ⌫ delete · ↵ / double-click edit text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect ·
+// M hide or show the toolbar and hint line (remembered).
 // Pictures dropped from Finder are added too; each is kept as a PNG in
 // data/sketch/images/.
 // Mouse: drag empty space to select the shapes inside a box, ⇧-click to add
@@ -41,10 +42,12 @@ const PICTURE = /\.(png|jpe?g|gif|heic|heif|tiff?|webp|bmp)$/i;
 // macOS does the image work (mods can't read the clipboard's image or decode
 // files): AppKit turns the clipboard's image, or a picture file, into a PNG and
 // prints its size in points ("none" when there's no image). JXA, via osascript.
+// Its arguments are "clipboard" or an absolute path: osascript would read one
+// starting with "-" as its own option.
 const TO_PNG = `ObjC.import("AppKit");
 function run(argv) {
   const src = argv[0], dest = argv[1];
-  const img = src === "--clipboard"
+  const img = src === "clipboard"
     ? $.NSImage.alloc.initWithPasteboard($.NSPasteboard.generalPasteboard)
     : $.NSImage.alloc.initWithContentsOfFile(src);
   if (!img || img.isNil() || !img.isValid) return "none";
@@ -216,6 +219,8 @@ export default class Sketch extends View {
     this.sel = [];          // selected shape ids
     // The hand-drawn look (H), remembered; a shape with "rough": false stays clean.
     this.rough = localStorage.getItem("rough") !== "false";
+    // The toolbar and hint line (M), remembered; hidden leaves a bare canvas.
+    this.bars = localStorage.getItem("bars") !== "hidden";
     this.spaceHeld = false; // Space down: a drag pans
     this.spaceAt = 0;       // Space's last key event (press or repeat)
     this.spaceRepeats = false;
@@ -358,6 +363,11 @@ export default class Sketch extends View {
     if (fillable.length) this.style(cx, () => ({ fill: this.fill ? COLORS[this.color][1] : null }), fillable);
   }
 
+  toggleBars() {
+    this.bars = !this.bars;
+    localStorage.setItem("bars", this.bars ? "shown" : "hidden");
+  }
+
   toggleRough() {
     this.rough = !this.rough;
     localStorage.setItem("rough", String(this.rough));
@@ -487,7 +497,7 @@ export default class Sketch extends View {
     });
   }
 
-  // Adds pictures ("--clipboard" for the clipboard's) in the middle of the view,
+  // Adds pictures ("clipboard" for the clipboard's) in the middle of the view,
   // each scaled down to fit it, as one undo step, and selects them.
   addImages(sources, cx) {
     cx.spawn(async (cx) => {
@@ -500,7 +510,7 @@ export default class Sketch extends View {
           if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `exit ${r.code}`);
           const [w, h] = r.stdout.trim().split(" ").map(Number);
           if (w > 0 && h > 0) added.push({ id, type: "image", src: `images/${id}.png`, x: 0, y: 0, w, h });
-          else this.note = src === "--clipboard" ? "No image on the clipboard" : `Not a picture: ${src.split("/").pop()}`;
+          else this.note = src === "clipboard" ? "No image on the clipboard" : `Not a picture: ${src.split("/").pop()}`;
         } catch (e) {
           this.note = `Couldn't add the image: ${e?.message ?? e}`;
         }
@@ -671,6 +681,7 @@ export default class Sketch extends View {
     else if (digit >= 0) this.recolor(cx, digit);
     else if (k === "f") this.toggleFill(cx);
     else if (k === "h") this.toggleRough();
+    else if (k === "m") this.toggleBars();
     else if (k === "s") {
       this.dashed = many.length ? !many[0].dashed : !this.dashed;
       this.style(cx, { dashed: this.dashed || null });
@@ -683,7 +694,7 @@ export default class Sketch extends View {
       this.save(cx);
     } else if (k === "enter" && s && labeled(s)) this.startEdit(s);
     else if (k === "i") this.pickImages(cx);
-    else if (k === "cmd-v") this.addImages(["--clipboard"], cx);
+    else if (k === "cmd-v") this.addImages(["clipboard"], cx);
     else if (k === "cmd-z") this.restore(this.undo, this.redo, cx);
     else if (k === "cmd-shift-z") this.restore(this.redo, this.undo, cx);
     else if (k === "shift-1" || k === "!" || e.key_char === "!") this.fit();
@@ -873,7 +884,8 @@ export default class Sketch extends View {
     const first = this.selection()[0];
     const cursor = this.drag?.kind === "pan" ? "grabbing" : this.spaceStillDown() ? "grab" : this.tool === "select" ? "default" : "crosshair";
 
-    const toolbar = h_flex().flex_none().flex_wrap().min_h(40).py(6).px(10).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
+    const status = this.error ?? this.note ?? `${Math.round(this.zoom * 100)}%`;
+    const toolbar = h_flex().id("sketch-toolbar").flex_none().flex_wrap().min_h(40).py(6).px(10).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .children(TOOLS.map(([name, key, label]) => this.button(`tool-${name}`, `${label} ${key.toUpperCase()}`, this.tool === name, () => this.setTool(name))))
       .child(div().w(12))
       .children(COLORS.map(([ink], i) => div().id(`color-${i}`).size(18).rounded(9).bg(inkFor(ink, this.dark)).cursor_pointer()
@@ -889,8 +901,9 @@ export default class Sketch extends View {
       .child(this.button("rough", "Hand-drawn H", this.rough, () => this.toggleRough()))
       .child(this.button("image", "Image I", false, (cx) => this.pickImages(cx)))
       .child(div().flex_1())
-      .child(div().text_size(11).text_color(t.dim).child(this.error ?? this.note ?? `${Math.round(this.zoom * 100)}%`))
-      .child(this.button("fit", "Fit ⇧1", false, () => this.fit()));
+      .child(div().text_size(11).text_color(t.dim).child(status))
+      .child(this.button("fit", "Fit ⇧1", false, () => this.fit()))
+      .child(this.button("hide-bars", "Hide M", false, () => this.toggleBars()));
 
     const canvas = div().id("sketch-canvas").relative().flex_1().min_h(0).overflow_hidden().bg(t.background)
       .when(cursor === "crosshair", (el) => el.cursor_crosshair())
@@ -909,17 +922,25 @@ export default class Sketch extends View {
       .on_drop((e, cx) => { const pics = (e.paths ?? []).filter((f) => PICTURE.test(f)); if (pics.length) this.addImages(pics, cx); })
       .children(layers)
       .when(!this.shapes.length, (el) => el.child(div().absolute().top(0).left(0).size_full().flex().items_center().justify_center()
-        .text_color(t.dim).text_size(14).child("Pick a tool (R box, A arrow, P pen, T text) and drag here.")));
+        .text_color(t.dim).text_size(14).child("Pick a tool (R box, A arrow, P pen, T text) and drag here.")))
+      // Bars hidden: one small button in the corner brings them back (and a note, if any).
+      .when(!this.bars, (el) => el.child(h_flex().absolute().top(8).right(8).gap(8).items_center()
+        .when(Boolean(this.error ?? this.note), (row) => row.child(div().text_size(11).text_color(t.dim).child(this.error ?? this.note)))
+        .child(div().id("show-bars").h(24).px(8).flex().items_center().rounded(6).border_1().border_color(t.border).bg(t.chrome)
+          .text_size(11).text_color(t.muted).cursor_pointer().hover((b) => b.bg(t.hover).text_color(t.foreground))
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_click((_e, cx) => { this.toggleBars(); this.handle.focus(); cx.notify(); })
+          .child("Show toolbar M"))));
 
     return v_flex().id("sketch").track_focus(this.handle).size_full().bg(t.background).overflow_hidden()
       .on_key_down((e, cx) => this.key(e, cx))
       .on_key_up((e, cx) => this.keyUp(e, cx))
-      .child(toolbar)
+      .when(this.bars, (el) => el.child(toolbar))
       .child(canvas)
-      .child(h_flex().flex_none().h(24).px(10).items_center().gap(12).border_t(1).border_color(t.border).bg(t.chrome)
+      .when(this.bars, (el) => el.child(h_flex().id("sketch-hints").flex_none().h(24).px(10).items_center().gap(12).border_t(1).border_color(t.border).bg(t.chrome)
         .text_size(11).text_color(t.dim)
-        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌘V paste image · ⌫ delete · ⌘Z undo")
+        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌘V paste image · ⌫ delete · ⌘Z undo · M hide bars")
         .child(div().flex_1())
-        .child("data/sketch/board.json"));
+        .child("data/sketch/board.json")));
   }
 }

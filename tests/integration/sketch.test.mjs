@@ -424,6 +424,10 @@ function mac({ clipboard = "640 480", files = [], sizes = {}, cancel = false } =
   const calls = { convert: [], dialog: 0 };
   host.exec = async (cmd, args) => {
     if (cmd !== "osascript") return { code: 0, stdout: "", stderr: "" };
+    // Like the real osascript: after an inline script (-e), an argument that starts
+    // with "-" is read as one of its own options (that's the bug that escaped once).
+    const script = args.indexOf("-e");
+    if (args.slice(script + 2).some((a) => a.startsWith("-"))) return { code: 2, stdout: "", stderr: "osascript: illegal option -- -" };
     if (args.join(" ").includes("choose file")) {
       calls.dialog++;
       return cancel ? { code: 1, stdout: "", stderr: "execution error: User canceled. (-128)" }
@@ -431,7 +435,7 @@ function mac({ clipboard = "640 480", files = [], sizes = {}, cancel = false } =
     }
     const [src, dest] = args.slice(-2);
     calls.convert.push([src, dest]);
-    return { code: 0, stdout: `${src === "--clipboard" ? clipboard : sizes[src] ?? "none"}\n`, stderr: "" };
+    return { code: 0, stdout: `${src === "clipboard" ? clipboard : sizes[src] ?? "none"}\n`, stderr: "" };
   };
   return calls;
 }
@@ -445,7 +449,7 @@ test("⌘V pastes the clipboard's image in the middle of the view, selected and 
   const [img] = images(v);
   assert.ok(img, "an image shape");
   assert.match(img.src, /^images\/[\w-]+\.png$/);
-  assert.deepEqual(calls.convert, [["--clipboard", IMAGES + img.src.slice("images/".length)]]);
+  assert.deepEqual(calls.convert, [["clipboard", IMAGES + img.src.slice("images/".length)]]);
   // The view is 1000×700 panned (40, 40): its middle is world (460, 310).
   assert.deepEqual([img.x + img.w / 2, img.y + img.h / 2, img.w, img.h], [460, 310, 320, 200]);
   assert.deepEqual(v.sel, [img.id]);
@@ -538,4 +542,45 @@ test("⌘Z takes a pasted image back out", async () => {
   await cx.settle();
   press(v, cx, "cmd-z");
   assert.equal(v.shapes.length, 0);
+});
+
+// ---- hiding the bars: M, the toolbar's Hide button, the corner button to bring them back.
+test("M hides the toolbar and the hint line, and M brings them back", async () => {
+  const { v, cx } = await mount();
+  assert.ok(byId(v.render(), "sketch-toolbar"));
+  press(v, cx, "m");
+  let root = v.render();
+  assert.equal(byId(root, "sketch-toolbar"), null);
+  assert.equal(byId(root, "sketch-hints"), null);
+  assert.ok(byId(root, "sketch-canvas"), "the canvas stays");
+  press(v, cx, "m");
+  root = v.render();
+  assert.ok(byId(root, "sketch-toolbar"));
+  assert.ok(byId(root, "sketch-hints"));
+});
+
+test("the toolbar's Hide button hides it, and the corner button shows it again", async () => {
+  const { v, cx } = await mount();
+  byId(v.render(), "hide-bars").handlers.on_click({}, cx);
+  assert.equal(byId(v.render(), "sketch-toolbar"), null);
+  const show = byId(v.render(), "show-bars");
+  assert.ok(show, "a way back while hidden");
+  show.handlers.on_click({}, cx);
+  assert.ok(byId(v.render(), "sketch-toolbar"));
+  assert.equal(byId(v.render(), "show-bars"), null);
+});
+
+test("hidden bars stay hidden next time", async () => {
+  const first = await mount();
+  press(first.v, first.cx, "m");
+  const { v } = await mount();
+  assert.equal(byId(v.render(), "sketch-toolbar"), null);
+});
+
+test("M while typing a label types, it doesn't hide the bars", async () => {
+  const { v, cx } = await mount([{ id: "a", type: "rect", x: 0, y: 0, w: 100, h: 50 }]);
+  down(v, cx, ...at(50, 25), { click_count: 2 });
+  up(v, cx, ...at(50, 25));
+  press(v, cx, "m");
+  assert.ok(byId(v.render(), "sketch-toolbar"));
 });
