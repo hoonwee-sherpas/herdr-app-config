@@ -873,3 +873,48 @@ test("details stay out of shared.json (they're big): kept in memory", async () =
   assert.equal(host.shared["github.details"], undefined);
   assert.ok(details.get(`pr|${REPO}|1`));
 });
+
+// ---- a PR's checks and files are folded to three, so the description is near the top
+const manyChecks = () => [...Array.from({ length: 38 }, (_, i) => ({ ...check("SUCCESS"), name: `ok-${i}` })),
+  { ...check("FAILURE"), name: "lint" }, { ...check("FAILURE"), name: "e2e" }];
+const manyFiles = () => Array.from({ length: 15 }, (_, i) => ({ path: `src/f${i}.ts`, additions: 1, deletions: 0 }));
+const checkRows = (v) => all(v.render(), (e) => /^ghd-check-\d+$/.test(String(e.props.id))).length;
+const fileRows = (v) => all(v.render(), (e) => /^ghd-file-\d+$/.test(String(e.props.id))).length;
+
+test("a PR's checks and files show three each until Show more", async () => {
+  gh.view = view({ statusCheckRollup: manyChecks(), files: manyFiles(), changedFiles: 15 });
+  const { v, cx } = await detail({ repo: REPO, kind: "pr", id: 1 });
+  assert.equal(checkRows(v), 3);
+  assert.equal(fileRows(v), 3);
+  const shown = text(byId(v.render(), "ghd-checks"));
+  assert.match(shown, /lint.*e2e/, "failing checks come first, so they're in view");
+  assert.match(text(byId(v.render(), "ghd-checks-more")), /Show 37 more/);
+  assert.match(text(byId(v.render(), "ghd-files-more")), /Show 12 more/);
+  click(v, cx, "ghd-checks-more");
+  assert.equal(checkRows(v), 40);
+  assert.equal(fileRows(v), 3, "each opens on its own");
+  assert.match(text(byId(v.render(), "ghd-checks-more")), /Show less/);
+  click(v, cx, "ghd-checks-more");
+  assert.equal(checkRows(v), 3);
+  click(v, cx, "ghd-files-more");
+  assert.equal(fileRows(v), 15);
+});
+
+test("three or fewer checks or files need no Show more", async () => {
+  gh.view = view();
+  const { v } = await detail({ repo: REPO, kind: "pr", id: 1 });
+  assert.equal(checkRows(v), 2);
+  assert.equal(byId(v.render(), "ghd-checks-more"), null);
+  assert.equal(byId(v.render(), "ghd-files-more"), null);
+});
+
+test("another PR opens folded again", async () => {
+  gh.view = view({ statusCheckRollup: manyChecks(), files: manyFiles(), changedFiles: 15 });
+  const { v, cx } = await detail({ repo: REPO, kind: "pr", id: 1 });
+  click(v, cx, "ghd-files-more");
+  gh.view = view({ number: 2, statusCheckRollup: manyChecks(), files: manyFiles(), changedFiles: 15 });
+  host.shared[DETAIL_KEY] = { repo: REPO, kind: "pr", id: 2 };
+  await cx.tick();
+  await cx.settle();
+  assert.equal(fileRows(v), 3);
+});

@@ -15,6 +15,7 @@ const PR_FIELDS = "number,title,body,author,state,isDraft,headRefName,baseRefNam
   + "additions,deletions,changedFiles,files,labels,latestReviews,reviewRequests,reviewDecision,statusCheckRollup,comments,isCrossRepository";
 const RUN_FIELDS = "databaseId,attempt,conclusion,createdAt,displayTitle,event,headBranch,jobs,name,startedAt,status,updatedAt,url,workflowName";
 const LOG_LINES = 60;
+const PEEK = 3; // checks and files shown before "Show more", so the description stays near the top
 const STATE_WORDS = { open: "Open", draft: "Draft", merged: "Merged", closed: "Closed" };
 const REVIEW_WORDS = { APPROVED: ["approved", "#2da44e"], CHANGES_REQUESTED: ["changes requested", "#e5534b"],
   COMMENTED: ["commented", null], DISMISSED: ["dismissed", null] };
@@ -37,6 +38,7 @@ export class Detail {
     this.note = null;
     this.loading = false;
     this.openJobs = new Set();
+    this.unfolded = new Set(); // "checks" | "files" opened past the first PEEK
     this.log = null;   // the failed log's tail, once asked for
     const check = (cx) => {
       const want = shared(DETAIL_KEY) ?? null;
@@ -53,7 +55,7 @@ export class Detail {
     const key = JSON.stringify(want);
     const cacheKey = `${want.kind}|${want.repo}|${want.id}`;
     const hit = details.get(cacheKey) ?? null;
-    if (key !== this.key) { this.item = hit?.data ?? null; this.openJobs.clear(); this.log = null; this.note = null; }
+    if (key !== this.key) { this.item = hit?.data ?? null; this.openJobs.clear(); this.unfolded.clear(); this.log = null; this.note = null; }
     this.key = key;
     this.want = want;
     this.error = null;
@@ -140,6 +142,17 @@ export class Detail {
       .child(iconButton(t, "ghd-close", "✕", () => this.onClose()));
   }
 
+  // A list folded to its first PEEK rows, with a row that shows the rest or folds it again.
+  folded(t, id, rows) {
+    const open = this.unfolded.has(id);
+    return v_flex().id(`ghd-${id}`).gap(1)
+      .children(open ? rows : rows.slice(0, PEEK))
+      .when(rows.length > PEEK, (el) => el.child(div().id(`ghd-${id}-more`).h(22).px(6).flex().items_center().rounded(5)
+        .text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .on_click((_e, cx) => { open ? this.unfolded.delete(id) : this.unfolded.add(id); cx.notify(); })
+        .child(open ? "Show less" : `Show ${rows.length - PEEK} more`)));
+  }
+
   // ---- a pull request
 
   renderPr(t, p) {
@@ -187,7 +200,7 @@ export class Detail {
               .on_click((_e, cx) => { cx.stop_propagation(); openLinear(id); })
               .child(id)))))))
         .when(checks.length > 0, (el) => el.child(this.section(t, `Checks ${checks.length}${failing ? ` · ${failing} failing` : ""}`,
-          v_flex().gap(1).children([...checks].sort((a, b) => (oneCheck(a) === "failure" ? 0 : 1) - (oneCheck(b) === "failure" ? 0 : 1))
+          this.folded(t, "checks", [...checks].sort((a, b) => (oneCheck(a) === "failure" ? 0 : 1) - (oneCheck(b) === "failure" ? 0 : 1))
             .map((c, n) => h_flex().id(`ghd-check-${n}`).h(24).px(6).gap(8).items_center().rounded(5)
               .when(Boolean(c.detailsUrl ?? c.targetUrl), (row) => row.cursor_pointer().hover((s) => s.bg(t.hover))
                 .on_click(() => exec("open", [c.detailsUrl ?? c.targetUrl]).catch(() => {})))
@@ -195,7 +208,7 @@ export class Detail {
               .child(div().flex_1().min_w(0).truncate().child(c.name ?? c.context ?? "check"))
               .child(div().flex_none().max_w(180).truncate().text_size(11).text_color(t.dim).child(c.workflowName ?? "")))))))
         .when((p.files ?? []).length > 0, (el) => el.child(this.section(t, `Files ${p.changedFiles}`,
-          v_flex().gap(1).children(p.files.slice(0, 50).map((f) => h_flex().h(22).px(6).gap(8).items_center().text_size(12)
+          this.folded(t, "files", p.files.map((f, n) => h_flex().id(`ghd-file-${n}`).h(22).px(6).gap(8).items_center().text_size(12)
             .child(div().flex_1().min_w(0).truncate().text_color(t.muted).child(f.path))
             .child(div().flex_none().text_size(11).text_color(COLOR.success).child(`+${f.additions}`))
             .child(div().flex_none().text_size(11).text_color(COLOR.failure).child(`−${f.deletions}`)))))))
