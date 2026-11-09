@@ -8,6 +8,10 @@ export function makeCx() {
     timers: [],
     notify() { cx.notified++; },
     stop_propagation() { cx.stopped++; },
+    // The system clipboard's text (undefined: it holds none, or only a picture).
+    clipboard: undefined,
+    read_from_clipboard() { return cx.clipboard; },
+    write_to_clipboard(text) { cx.clipboard = String(text); },
     focus_handle() {
       return { focused: false, focus() { this.focused = true; }, is_focused() { return this.focused; } };
     },

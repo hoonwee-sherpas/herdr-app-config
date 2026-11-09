@@ -81,5 +81,9 @@
   "layout:main-linear": {
     "cmd-shift-i": "tabs-linear.linear",
     "cmd-shift-g": "tabs-linear.github"
+  },
+  "mod:Sketch": {
+    "cmd-d": "Sketch.duplicate",
+    "cmd-shift-g": "Sketch.ungroup"
   }
 }

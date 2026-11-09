@@ -72,3 +72,9 @@ test("no tracked file holds a Linear API key", () => {
   const files = execFileSync("git", ["ls-files"], { cwd: home, encoding: "utf8" }).split("\n").filter(Boolean);
   for (const f of files) assert.doesNotMatch(read(f), /lin_api_[A-Za-z0-9]{20,}/, f);
 });
+
+test("⌘D in a Sketch board duplicates instead of splitting the pane", () => {
+  assert.equal(JSON.parse(read("keys.json"))["mod:Sketch"]["cmd-d"], "Sketch.duplicate");
+  // and ⌘⇧G ungroups instead of toggling the GitHub panel
+  assert.equal(JSON.parse(read("keys.json"))["mod:Sketch"]["cmd-shift-g"], "Sketch.ungroup");
+});

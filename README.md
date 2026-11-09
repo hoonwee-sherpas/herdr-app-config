@@ -14,7 +14,7 @@ changes show up as soon as the files are saved.
 | `mods/linear-issues/` | The Linear panel: issues assigned to you, with a search, by project (a resizable side nav of projects) or by state, matched to Herdr spaces by branch, plus an issue detail view |
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
 | `mods/github/` | The GitHub panel for the active space's repo (through `gh`): open pull requests (All / Mine / Review requested, search), closed ones 25 a page (All / Mine / Reviewed by me and the search run on GitHub, so they cover every page), Actions runs 30 a page with a resizable side nav of workflows, and a detail view (a PR's reviews, checks, files, description and comments; a run's jobs, steps and failed log, with re-run and cancel). PRs link to their space or offer a worktree, and to their Linear issue. Toasts when CI fails on your PR, it gets a review, or your review is requested |
-| `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text; follows light/dark themes. The board is `data/sketch/board.json`, which agents can edit (format in `mods/Sketch/FORMAT.md`) |
+| `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text and pictures; ⌘C/⌘X/⌘V copy, cut and paste shapes (between boards too), ⌘D duplicates, ⌘G/⌘⇧G group and ungroup, right-click opens a menu of everything, drag a corner handle or anywhere along an edge of the selection outline to resize (text by its font size), and each tool goes back to select after one use; follows light/dark themes. The board is `data/sketch/board.json`, which agents can edit (format in `mods/Sketch/FORMAT.md`) |
 | `keys.json` | Key bindings, including the ones below |
 | `tests/`, `package.json` | Unit and integration tests for the mods (`npm test`); how to write them is in `tests/AGENTS.md` |
 | `CLAUDE.md` | Points agents at `tests/AGENTS.md` (Herdr rewrites the root `AGENTS.md`) |
@@ -31,6 +31,8 @@ state, so `.gitignore` leaves it out.
 | ⌘⇧L | Switch layout (pick `main-linear`) |
 | ⌘⇧G | Open or close the GitHub panel (`main-linear`) |
 | ⌘⇧E | Open a Sketch pane to the right (also the Sketch button in the tab bar) |
+| ⌘D (in a Sketch board) | Duplicate the selection, instead of splitting the pane (`mod:Sketch` in `keys.json`) |
+| ⌘⇧G (in a Sketch board) | Ungroup, instead of toggling the GitHub panel |
 
 In the search popup: ↵ shows details (and opens the Linear panel), ⌘↵ opens the
 issue in Linear, ⌘G goes to the issue's space or makes a worktree for its branch,

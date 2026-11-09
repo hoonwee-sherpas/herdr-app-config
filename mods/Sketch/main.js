@@ -4,7 +4,9 @@
 // as you draw and reloaded when something else (an AI agent) changes it.
 //
 // Keys: V select · R box · O ellipse · D diamond · A arrow · L line · P pen ·
-// T text · I insert images · ⌘V paste an image · 1–6 color · F fill · S dashed ·
+// T text · I insert images · ⌘C / ⌘X / ⌘V copy, cut, paste (shapes, or a
+// picture) · ⌘D duplicate · ⌘G / ⌘⇧G group, ungroup · ⌘A select all · 1–6 color · F fill · S dashed ·
+// (⌘D and ⌘⇧G come as commands, see keys.json) · right-click for a menu ·
 // ⌫ delete · ↵ / double-click edit text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect ·
 // M hide or show the toolbar and hint line (remembered).
 // Pictures dropped from Finder are added too; each is kept as a PNG in
@@ -12,12 +14,15 @@
 // Mouse: drag empty space to select the shapes inside a box, ⇧-click to add
 // or remove one, drag a selected shape to move the whole selection. Hold Space
 // (or the middle button) and drag to pan, scroll to pan, ⌘ or ctrl + scroll to
-// zoom. Drag a lone shape's bottom-right handle to resize.
+// zoom. A lone selected shape has a handle on each corner of its outline, and
+// each edge of the outline grabs too: drag one to
+// resize from that side (⇧ keeps a box's proportions; pictures always keep
+// theirs, and text scales its font).
 
 import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse } from "./rough.js";
-import { appHome, readTextFile, writeTextFile, watchFolder, exec, theme, settings } from "herdr";
+import { appHome, readTextFile, writeTextFile, watchFolder, exec, theme, settings, nextCommand } from "herdr";
 
 const DIR = () => `${appHome()}/data/sketch`;
 const FILE = () => `${DIR()}/board.json`;
@@ -65,6 +70,22 @@ end repeat
 return out`;
 const GAP = 6;          // between an attached arrow and its shape
 const HANDLE = 9;       // resize handle, screen px
+const RIM = 5;           // the selection outline, this far outside the shape, screen px
+const EDGE = 4;          // how near the outline's edge a press grabs it, screen px
+// Where to resize from, on the shape's box (0 left/top … 1 right/bottom): a
+// handle on each corner of the selection outline, and each whole edge of it.
+const CORNERS = [["nw", 0, 0], ["ne", 1, 0], ["se", 1, 1], ["sw", 0, 1]];
+const EDGES = [["n", 0.5, 0], ["e", 1, 0.5], ["s", 0.5, 1], ["w", 0, 0.5]];
+const HANDLE_CURSOR = { nw: "cursor_nwse_resize", se: "cursor_nwse_resize", ne: "cursor_nesw_resize", sw: "cursor_nesw_resize",
+  n: "cursor_ns_resize", s: "cursor_ns_resize", e: "cursor_ew_resize", w: "cursor_ew_resize" };
+const MIN_SIDE = 8;     // smallest a resized box gets, world px
+const STEP = 20;        // how far a paste or duplicate lands from the original
+// Keys for actions the menu offers too.
+const KEYED = { "cmd-c": "copy", "cmd-x": "cut", "cmd-v": "paste", "cmd-d": "duplicate", "cmd-g": "group", "cmd-shift-g": "ungroup", "cmd-a": "select-all" };
+const MENU_W = 210;     // the right-click menu, px
+const ROW = 26, SEP = 9; // its rows and separators
+// Copied shapes on the clipboard: {"herdr-sketch": 1, "shapes": [...]}.
+const CLIP_KEY = "herdr-sketch";
 const FONT = 20;        // default text size
 
 // ---- colors: the board stores light-mode colors; on a dark theme inks are
@@ -100,6 +121,7 @@ export const fillFor = (c, dark) => {
   return hex([h, s * 0.6, 0.14 + (1 - l) * 0.4]);
 };
 
+const newGroup = () => `g${Date.now().toString(36)}${Math.floor(Math.random() * 46656).toString(36)}`;
 const newId = () => `s${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -176,6 +198,58 @@ export function hits(s, p, byId, tol) {
   return false;
 }
 
+/**
+ * A box `b` resized by dragging handle (hx, hy) to `p`. The sides the handle
+ * is on follow the pointer (never closer than MIN_SIDE to the opposite side);
+ * the others stay. With `keep`, the box keeps its proportions: scaled by the
+ * moved side's ratio (a corner: the larger), anchored at the opposite side or
+ * corner, centered along an edge. Gives { x, y, w, h, k }.
+ */
+export function resized(b, hx, hy, p, keep, minK = 0) {
+  let x0 = b.x, y0 = b.y, x1 = b.x + b.w, y1 = b.y + b.h;
+  if (hx === 0) x0 = Math.min(p[0], x1 - MIN_SIDE); else if (hx === 1) x1 = Math.max(p[0], x0 + MIN_SIDE);
+  if (hy === 0) y0 = Math.min(p[1], y1 - MIN_SIDE); else if (hy === 1) y1 = Math.max(p[1], y0 + MIN_SIDE);
+  if (!keep || !b.w || !b.h) return { x: x0, y: y0, w: x1 - x0, h: y1 - y0, k: 1 };
+  const kw = (x1 - x0) / b.w, kh = (y1 - y0) / b.h;
+  const k = Math.max(minK, MIN_SIDE / Math.min(b.w, b.h), hx === 0.5 ? kh : hy === 0.5 ? kw : Math.max(kw, kh));
+  if (Math.abs(k - 1) < 1e-9) return { ...b, k: 1 };
+  const w = b.w * k, h = b.h * k;
+  const at = (start, size, to, h) => (h === 0 ? start + size - to : h === 1 ? start : start + (size - to) / 2);
+  return { x: at(b.x, b.w, w, hx), y: at(b.y, b.h, h, hy), w, h, k };
+}
+
+/**
+ * Copies of `shapes` for the clipboard: an arrow's ends attached to a shape
+ * outside the set let go where they're drawn now.
+ */
+export function detach(shapes, byId) {
+  const inside = new Set(shapes.map((s) => s.id));
+  return shapes.map((s) => {
+    const c = JSON.parse(JSON.stringify(s));
+    if ((s.from && !inside.has(s.from)) || (s.to && !inside.has(s.to))) {
+      c.points = points(s, byId);
+      if (!inside.has(s.from)) delete c.from;
+      if (!inside.has(s.to)) delete c.to;
+    }
+    return c;
+  });
+}
+
+/** `shapes` (from detach) with new ids, moved by (dx, dy); arrows stay attached among them. */
+export function placed(shapes, dx, dy) {
+  const ids = new Map(shapes.map((s) => [s.id, newId()]));
+  // A copied group is a new group: copies don't join the original's.
+  const groups = new Map();
+  return shapes.map((s) => {
+    const c = { ...JSON.parse(JSON.stringify(s)), id: ids.get(s.id) };
+    if (c.group != null) { if (!groups.has(c.group)) groups.set(c.group, newGroup()); c.group = groups.get(c.group); }
+    if (typeof c.x === "number") { c.x += dx; c.y += dy; }
+    if (Array.isArray(c.points)) c.points = c.points.map((q) => [q[0] + dx, q[1] + dy]);
+    for (const end of ["from", "to"]) if (c[end] != null) { if (ids.has(c[end])) c[end] = ids.get(c[end]); else delete c[end]; }
+    return c;
+  });
+}
+
 // ---- paths (screen coordinates)
 
 export function roundRect(pb, x, y, w, h, r) {
@@ -236,11 +310,28 @@ export default class Sketch extends View {
     this.saveSeq = 0;
     this.error = null;
     this.note = null;       // a passing message ("No image on the clipboard")
+    this.pasted = 0;        // times the clipboard's shapes (pastedText) were pasted in a row
+    this.pastedText = null;
+    this.ranAt = {};        // when a key that also comes as a command last ran, by name
+    this.menu = null;       // the right-click menu: { x, y } on screen, `at` in the world
     this.done = false;
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Text" });
     this.input.on("submit", (_e, cx) => { this.finishEdit(cx); cx.notify(); });
     cx.timer.after(300, () => this.handle.focus());
+    // Keys herdr takes for itself everywhere come as commands ("mod:Sketch" in
+    // keys.json): ⌘D splits the pane anywhere else.
+    cx.spawn(async (cx) => {
+      for (;;) {
+        const c = String(await nextCommand());
+        if (this.done) return;
+        if ((c === "duplicate" || c === "ungroup") && this.handle.is_focused() && !this.editing) {
+          // The same press may have reached the key handler too.
+          if (Date.now() - (this.ranAt[c] ?? 0) > 250) this.act(c, cx);
+          cx.notify();
+        }
+      }
+    });
     cx.spawn(async (cx) => {
       try {
         await exec("mkdir", ["-p", DIR()]);
@@ -277,6 +368,12 @@ export default class Sketch extends View {
   byId() { return new Map(this.shapes.map((s) => [s.id, s])); }
   // Every selected shape, in drawing order.
   selection() { return this.shapes.filter((s) => this.sel.includes(s.id)); }
+  // `ids` and every other member of their groups, in drawing order.
+  withGroups(ids) {
+    const want = new Set(ids);
+    const groups = new Set(this.shapes.filter((s) => want.has(s.id) && s.group != null).map((s) => s.group));
+    return this.shapes.filter((s) => want.has(s.id) || (s.group != null && groups.has(s.group))).map((s) => s.id);
+  }
   // The selected shape when there's exactly one (resize, edit text).
   selected() { return this.sel.length === 1 ? this.shapes.find((s) => s.id === this.sel[0]) ?? null : null; }
   // Mouse events come in screen points; the canvas lays out in herdr's zoomed
@@ -423,6 +520,8 @@ export default class Sketch extends View {
 
   down(e, cx) {
     cx.stop_propagation();
+    // A press outside an open menu only closes it.
+    if (this.menu) { this.menu = null; return; }
     // Before taking focus: a Space remembered while the keyboard was elsewhere is stale.
     if (this.spaceHeld && !this.spaceStillDown()) this.spaceHeld = false;
     this.measure(e);
@@ -442,11 +541,19 @@ export default class Sketch extends View {
 
     if (this.tool === "select") {
       const sel = this.selected();
-      if (sel && BOXY.has(sel.type) && sel.type !== "text") {
-        const b = norm(sel);
-        const [hx, hy] = this.screen([b.x + b.w, b.y + b.h]);
-        if (Math.abs(local.x - hx) <= HANDLE && Math.abs(local.y - hy) <= HANDLE) {
-          this.drag = { kind: "resize", before: JSON.stringify(this.shapes), s: sel, b };
+      if (sel && BOXY.has(sel.type)) {
+        const b = bbox(sel);
+        const o = this.outline(b);
+        const along = (v, a, b) => v >= a && v <= b;
+        // Corners first: they win where they overlap an edge.
+        const grab = CORNERS.find(([, fx, fy]) => Math.abs(local.x - (fx ? o.r : o.l)) <= HANDLE && Math.abs(local.y - (fy ? o.b : o.t)) <= HANDLE)
+          ?? EDGES.find(([, fx, fy]) => (fx === 0.5
+            ? Math.abs(local.y - (fy ? o.b : o.t)) <= EDGE && along(local.x, o.l, o.r)
+            : Math.abs(local.x - (fx ? o.r : o.l)) <= EDGE && along(local.y, o.t, o.b)));
+        if (grab) {
+          // Where in the handle it was grabbed, so the side doesn't jump to the pointer.
+          const off = [p[0] - (b.x + b.w * grab[1]), p[1] - (b.y + b.h * grab[2])];
+          this.drag = { kind: "resize", before: JSON.stringify(this.shapes), s: sel, b, hx: grab[1], hy: grab[2], off, fontSize: sel.fontSize };
           return;
         }
       }
@@ -454,11 +561,12 @@ export default class Sketch extends View {
       const shift = Boolean(e.modifiers?.shift);
       if (s && e.click_count >= 2 && labeled(s)) { this.startEdit(s); return; }
       if (s && shift) {
-        this.sel = this.sel.includes(s.id) ? this.sel.filter((id) => id !== s.id) : [...this.sel, s.id];
+        const members = new Set(this.withGroups([s.id]));
+        this.sel = this.sel.includes(s.id) ? this.sel.filter((id) => !members.has(id)) : this.withGroups([...this.sel, s.id]);
         return;
       }
       if (s) {
-        if (!this.sel.includes(s.id)) this.sel = [s.id];
+        if (!this.sel.includes(s.id)) this.sel = this.withGroups([s.id]);
         this.drag = { ...this.moving(p), clicked: s.id };
       } else {
         // A box from here selects what it covers; ⇧ adds to the selection.
@@ -473,6 +581,7 @@ export default class Sketch extends View {
     if (this.tool === "text") {
       s = { id: newId(), type: "text", x: p[0], y: p[1] - FONT * 0.65, ...style };
       this.shapes.push(s);
+      this.tool = "select"; // every tool is one action, then back to selecting
       this.startEdit(s);
       return;
     }
@@ -481,6 +590,200 @@ export default class Sketch extends View {
     else s = { id: newId(), type: this.tool, x: p[0], y: p[1], w: 0, h: 0, ...style, ...(this.fill ? { fill: COLORS[this.color][1] } : {}) };
     this.shapes.push(s);
     this.drag = { kind: "draw", s, start: p };
+  }
+
+  // ---- copy and paste
+
+  deleteSelection(cx) {
+    this.remember();
+    const gone = new Set(this.sel);
+    this.shapes = this.shapes.filter((x) => !gone.has(x.id));
+    for (const x of this.shapes) { if (gone.has(x.from)) delete x.from; if (gone.has(x.to)) delete x.to; }
+    this.sel = [];
+    this.save(cx);
+  }
+
+  // Puts the selection on the system clipboard as text.
+  copy(cx) {
+    cx.write_to_clipboard(JSON.stringify({ [CLIP_KEY]: 1, shapes: detach(this.selection(), this.byId()) }));
+  }
+
+  // Adds `list` (detached shapes) moved by (dx, dy) as one undo step, and selects them.
+  insert(list, dx, dy, cx) {
+    const added = placed(list, dx, dy);
+    this.remember();
+    this.shapes.push(...added);
+    this.sel = added.map((s) => s.id);
+    this.tool = "select";
+    this.save(cx);
+  }
+
+  duplicate(cx) {
+    this.insert(detach(this.selection(), this.byId()), STEP, STEP, cx);
+  }
+
+  // Shapes copied from a Sketch board, or else the clipboard's picture. The
+  // same shapes pasted again land a step further along each time; shapes the
+  // view has moved away from land in its middle.
+  paste(cx, at) {
+    const text = cx.read_from_clipboard?.();
+    let list = null;
+    try {
+      const d = text ? JSON.parse(text) : null;
+      if (d?.[CLIP_KEY] && Array.isArray(d.shapes)) list = d.shapes.filter((s) => s && typeof s.type === "string");
+    } catch { /* not ours */ }
+    if (!list?.length) { this.addImages(["clipboard"], cx); return; }
+    this.pasted = this.pastedText === text ? this.pasted + 1 : 1;
+    this.pastedText = text;
+    const byId = new Map(list.map((s) => [s.id, s]));
+    const bs = list.map((s) => bbox(s, byId));
+    const x0 = Math.min(...bs.map((b) => b.x)), y0 = Math.min(...bs.map((b) => b.y));
+    const x1 = Math.max(...bs.map((b) => b.x + b.w)), y1 = Math.max(...bs.map((b) => b.y + b.h));
+    let dx = STEP * this.pasted, dy = STEP * this.pasted;
+    // From the menu: where it was opened.
+    if (at) { this.insert(list, at[0] - x0, at[1] - y0, cx); return; }
+    const [vx0, vy0] = this.world({ x: 0, y: 0 }), [vx1, vy1] = this.world({ x: this.size.width, y: this.size.height });
+    if (x1 + dx < vx0 || x0 + dx > vx1 || y1 + dy < vy0 || y0 + dy > vy1) {
+      const [mx, my] = this.world({ x: this.size.width / 2, y: this.size.height / 2 });
+      dx = mx - (x0 + x1) / 2; dy = my - (y0 + y1) / 2;
+    }
+    this.insert(list, dx, dy, cx);
+  }
+
+  // ---- groups and order
+
+  // The selection made one group (shapes already in groups leave them).
+  group(cx) {
+    const gid = newGroup();
+    this.style(cx, { group: gid });
+  }
+
+  ungroup(cx) {
+    this.style(cx, { group: null }, this.selection().filter((s) => s.group != null));
+  }
+
+  // Whether the selection is already exactly one whole group.
+  oneGroup() {
+    const many = this.selection();
+    const g = many[0]?.group;
+    return g != null && many.every((s) => s.group === g) && this.shapes.every((s) => s.group !== g || this.sel.includes(s.id));
+  }
+
+  // Moves the selection to the top of the drawing (or the bottom), as one undo step.
+  restack(cx, front) {
+    const picked = new Set(this.sel);
+    const moving = this.shapes.filter((s) => picked.has(s.id)), rest = this.shapes.filter((s) => !picked.has(s.id));
+    this.remember();
+    this.shapes = front ? [...rest, ...moving] : [...moving, ...rest];
+    this.save(cx);
+  }
+
+  // ---- actions: what keys and the right-click menu both do
+
+  can(name) {
+    const many = this.sel.length;
+    switch (name) {
+      case "cut": case "copy": case "duplicate": case "delete": case "front": case "back": case "fill": case "dashed": return many > 0;
+      case "group": return many > 1 && !this.oneGroup();
+      case "ungroup": return this.selection().some((s) => s.group != null);
+      case "edit": { const s = this.selected(); return Boolean(s && labeled(s)); }
+      default: return true;
+    }
+  }
+
+  act(name, cx) {
+    if (!this.can(name)) return;
+    switch (name) {
+      case "cut": this.copy(cx); this.deleteSelection(cx); break;
+      case "copy": this.copy(cx); break;
+      case "paste": this.paste(cx, this.menu?.at); break;
+      case "duplicate": this.duplicate(cx); break;
+      case "delete": this.deleteSelection(cx); break;
+      case "group": this.group(cx); break;
+      case "ungroup": this.ungroup(cx); break;
+      case "edit": this.startEdit(this.selected()); break;
+      case "front": this.restack(cx, true); break;
+      case "back": this.restack(cx, false); break;
+      case "fill": this.toggleFill(cx); break;
+      case "dashed": { const many = this.selection(); this.dashed = !many[0].dashed; this.style(cx, { dashed: this.dashed || null }); break; }
+      case "image": this.pickImages(cx); break;
+      case "select-all": this.sel = this.shapes.map((s) => s.id); this.tool = "select"; break;
+      case "fit": this.fit(); break;
+      case "rough": this.toggleRough(); break;
+      case "bars": this.toggleBars(); break;
+    }
+  }
+
+  // ---- the right-click menu
+
+  openMenu(e, cx) {
+    cx.stop_propagation();
+    this.measure(e);
+    if (this.editing) this.finishEdit(cx);
+    this.handle.focus();
+    const local = this.local(e);
+    if (!local) return;
+    const p = this.world(local);
+    const s = this.hitAt(p);
+    // On a shape outside the selection: that shape (and its group) instead.
+    if (!s) this.sel = [];
+    else if (!this.sel.includes(s.id)) this.sel = this.withGroups([s.id]);
+    this.tool = "select";
+    this.menu = { x: local.x, y: local.y, at: p };
+    cx.notify();
+  }
+
+  // The menu's rows: [name, label, key, checked] or "-" between sections.
+  menuRows() {
+    const rows = this.sel.length
+      ? ["cut", "copy", "paste", "duplicate", "-", "group", "ungroup", "edit", "-", "front", "back", "-", "fill", "dashed", "-", "delete"]
+      : ["paste", "image", "select-all", "-", "fit", "rough", "bars"];
+    const first = this.selection()[0];
+    const label = {
+      cut: ["Cut", "⌘X"], copy: ["Copy", "⌘C"], paste: ["Paste", "⌘V"], duplicate: ["Duplicate", "⌘D"],
+      group: ["Group", "⌘G"], ungroup: ["Ungroup", "⌘⇧G"], edit: ["Edit text", "↵"],
+      front: ["Bring to front", ""], back: ["Send to back", ""],
+      fill: ["Fill", "F", Boolean(first?.fill)], dashed: ["Dashed", "S", Boolean(first?.dashed)], delete: ["Delete", "⌫"],
+      image: ["Insert image…", "I"], "select-all": ["Select all", "⌘A"], fit: ["Fit to content", "⇧1"],
+      rough: ["Hand-drawn", "H", this.rough], bars: [this.bars ? "Hide toolbar" : "Show toolbar", "M"],
+    };
+    const out = [];
+    for (const r of rows) {
+      if (r === "-") { if (out.length && out.at(-1) !== "-") out.push("-"); continue; }
+      if (this.can(r)) out.push([r, ...label[r]]);
+    }
+    while (out.at(-1) === "-") out.pop();
+    return out;
+  }
+
+  drawMenu(out) {
+    if (!this.menu) return;
+    const t = this.t;
+    const rows = this.menuRows();
+    const colors = this.sel.length > 0;
+    const height = 8 + rows.reduce((h, r) => h + (r === "-" ? SEP : ROW), 0) + (colors ? ROW + SEP : 0);
+    const left = clamp(this.menu.x, 4, Math.max(4, this.size.width - MENU_W - 4));
+    const top = this.menu.y + height > this.size.height - 4 ? Math.max(4, this.menu.y - height) : this.menu.y;
+    const done = (cx) => { this.menu = null; if (!this.editing) this.handle.focus(); cx.notify(); };
+    const stop = (_e, cx) => cx.stop_propagation();
+    out.push(v_flex().id("sketch-menu").absolute().left(left).top(top).w(MENU_W).py(4).px(4)
+      .rounded(8).border_1().border_color(t.border).bg(t.popover ?? t.background).shadow_lg()
+      .on_mouse_down("left", stop).on_mouse_down("right", stop).on_scroll_wheel(stop)
+      .when(colors, (el) => el.child(h_flex().h(ROW).px(8).gap(6).items_center()
+        .children(COLORS.map(([ink], i) => div().id(`sketch-menu-color-${i}`).size(16).rounded(8).bg(inkFor(ink, this.dark)).cursor_pointer()
+          .border_2().border_color(this.color === i ? SELECT : t.popover ?? t.background)
+          .on_click((_e, cx) => { this.recolor(cx, i); done(cx); }))))
+        .child(div().h(1).my(4).mx(6).bg(t.border)))
+      .children(rows.map((r) => {
+        if (r === "-") return div().h(1).my(4).mx(6).bg(t.border);
+        const [name, label, key, checked] = r;
+        return h_flex().id(`sketch-menu-${name}`).h(ROW).px(8).gap(8).items_center().rounded(5).cursor_pointer()
+          .text_size(12).text_color(name === "delete" ? "#e03131" : t.foreground).hover((el) => el.bg(t.hover))
+          .on_click((_e, cx) => { this.act(name, cx); done(cx); })
+          .child(div().w(12).flex_none().text_color(SELECT).child(checked ? "✓" : ""))
+          .child(div().flex_1().child(label))
+          .child(div().text_size(11).text_color(t.dim).child(key));
+      })));
   }
 
   // ---- images
@@ -570,9 +873,15 @@ export default class Sketch extends View {
         }
       }
     } else if (d.kind === "resize") {
-      d.s.x = d.b.x; d.s.y = d.b.y;
-      d.s.w = Math.max(8, p[0] - d.b.x); d.s.h = Math.max(8, p[1] - d.b.y);
-      if (d.s.type === "image") d.s.h = d.s.w * (d.b.h / d.b.w); // keeps its proportions
+      // Pictures and text keep their proportions; ⇧ keeps a box's.
+      const text = d.s.type === "text";
+      const keep = text || d.s.type === "image" || Boolean(e.modifiers?.shift);
+      const from = d.fontSize ?? FONT;
+      const r = resized(d.b, d.hx, d.hy, [p[0] - d.off[0], p[1] - d.off[1]], keep, text ? 4 / from : 0);
+      d.s.x = r.x; d.s.y = r.y;
+      if (!text) { d.s.w = r.w; d.s.h = r.h; }
+      else if (r.k === 1 && d.fontSize == null) delete d.s.fontSize;
+      else d.s.fontSize = Math.round(from * r.k * 10) / 10;
     } else if (d.kind === "draw") {
       const s = d.s;
       if (s.type === "pen") {
@@ -609,12 +918,18 @@ export default class Sketch extends View {
         const b = bbox(s, byId);
         return b.x >= x0 && b.y >= y0 && b.x + b.w <= x1 && b.y + b.h <= y1;
       }).map((s) => s.id);
-      this.sel = [...new Set([...d.base, ...inside])];
+      // A group counts only when the box covers all of it.
+      const covered = new Set(inside);
+      const whole = inside.filter((id) => {
+        const g = byId.get(id).group;
+        return g == null || this.shapes.every((x) => x.group !== g || covered.has(x.id));
+      });
+      this.sel = [...new Set([...d.base, ...whole])];
       return;
     }
     if (d.kind === "move" || d.kind === "resize") {
       // A click (no drag) on a shape in a larger selection picks just that one.
-      if (d.kind === "move" && JSON.stringify(this.shapes) === d.before && d.clicked) this.sel = [d.clicked];
+      if (d.kind === "move" && JSON.stringify(this.shapes) === d.before && d.clicked) this.sel = this.withGroups([d.clicked]);
       if (JSON.stringify(this.shapes) !== d.before) {
         this.undo.push(d.before);
         this.redo = [];
@@ -625,6 +940,8 @@ export default class Sketch extends View {
     const s = d.s;
     if (s.type === "pen") {
       if (s.points.length < 2) s.points.push([s.points[0][0] + 0.5, s.points[0][1] + 0.5]);
+      this.tool = "select";
+      this.sel = [s.id];
     } else if (s.points) {
       const [a, b] = s.points;
       if (Math.hypot(b[0] - a[0], b[1] - a[1]) * this.zoom < 4) { this.shapes.pop(); this.undo.pop(); return; }
@@ -645,6 +962,7 @@ export default class Sketch extends View {
 
   wheel(e, cx) {
     this.measure(e);
+    this.menu = null;
     cx.stop_propagation();
     if (e.modifiers.platform || e.modifiers.control) {
       const l = this.local(e) ?? { x: this.size.width / 2, y: this.size.height / 2 };
@@ -673,6 +991,15 @@ export default class Sketch extends View {
       if (k === "escape") { this.finishEdit(cx); cx.stop_propagation(); cx.notify(); }
       return;
     }
+    if (this.menu && k === "escape") { this.menu = null; cx.stop_propagation(); cx.notify(); return; }
+    const named = KEYED[k];
+    if (named && this.can(named)) {
+      this.ranAt[named] = Date.now();
+      this.act(named, cx);
+      cx.stop_propagation();
+      cx.notify();
+      return;
+    }
     const tool = TOOLS.find((t) => t[1] === k);
     const digit = /^[1-6]$/.test(k) ? Number(k) - 1 : -1;
     const s = this.selected();
@@ -685,16 +1012,9 @@ export default class Sketch extends View {
     else if (k === "s") {
       this.dashed = many.length ? !many[0].dashed : !this.dashed;
       this.style(cx, { dashed: this.dashed || null });
-    } else if ((k === "backspace" || k === "delete") && many.length) {
-      this.remember();
-      const gone = new Set(this.sel);
-      this.shapes = this.shapes.filter((x) => !gone.has(x.id));
-      for (const x of this.shapes) { if (gone.has(x.from)) delete x.from; if (gone.has(x.to)) delete x.to; }
-      this.sel = [];
-      this.save(cx);
-    } else if (k === "enter" && s && labeled(s)) this.startEdit(s);
+    } else if ((k === "backspace" || k === "delete") && many.length) this.deleteSelection(cx);
+    else if (k === "enter" && s && labeled(s)) this.startEdit(s);
     else if (k === "i") this.pickImages(cx);
-    else if (k === "cmd-v") this.addImages(["clipboard"], cx);
     else if (k === "cmd-z") this.restore(this.undo, this.redo, cx);
     else if (k === "cmd-shift-z") this.restore(this.redo, this.undo, cx);
     else if (k === "shift-1" || k === "!" || e.key_char === "!") this.fit();
@@ -823,14 +1143,34 @@ export default class Sketch extends View {
     }
   }
 
+  // The selection outline around box `b` (world), in screen px: left, top, right, bottom.
+  outline(b) {
+    const [x, y] = this.screen([b.x, b.y]);
+    return { l: x - RIM, t: y - RIM, r: x + b.w * this.zoom + RIM, b: y + b.h * this.zoom + RIM };
+  }
+
   drawSelection(byId, out) {
     for (const s of this.selection()) {
       const b = bbox(s, byId);
       const [x, y] = this.screen([b.x, b.y]);
       const w = b.w * this.zoom, h = b.h * this.zoom;
       out.push(window.paint_path(PathBuilder.stroke(1).dash_array([4, 3]).add_polygon(
-        [[x - 5, y - 5], [x + w + 5, y - 5], [x + w + 5, y + h + 5], [x - 5, y + h + 5]], true).build(), SELECT)
+        [[x - RIM, y - RIM], [x + w + RIM, y - RIM], [x + w + RIM, y + h + RIM], [x - RIM, y + h + RIM]], true).build(), SELECT)
         .absolute().top(0).left(0).size_full());
+    }
+    // A whole group selected: one more outline around all of it.
+    const picked = new Set(this.sel);
+    const groups = new Set(this.selection().map((s) => s.group).filter((g) => g != null));
+    for (const g of groups) {
+      const members = this.shapes.filter((s) => s.group === g);
+      if (!members.every((s) => picked.has(s.id))) continue;
+      const bs = members.map((s) => bbox(s, byId));
+      const [x0, y0] = this.screen([Math.min(...bs.map((b) => b.x)), Math.min(...bs.map((b) => b.y))]);
+      const [x1, y1] = this.screen([Math.max(...bs.map((b) => b.x + b.w)), Math.max(...bs.map((b) => b.y + b.h))]);
+      const r = RIM + 5;
+      out.push(window.paint_path(PathBuilder.stroke(1.5).dash_array([6, 3]).add_polygon(
+        [[x0 - r, y0 - r], [x1 + r, y0 - r], [x1 + r, y1 + r], [x0 - r, y1 + r]], true).build(), SELECT)
+        .id(`sketch-group-${g}`).absolute().top(0).left(0).size_full());
     }
     const d = this.drag;
     if (d?.kind === "marquee") {
@@ -841,12 +1181,18 @@ export default class Sketch extends View {
     // Resizing is for one shape at a time.
     const s = this.selected();
     if (!s) return;
-    const b = bbox(s, byId);
-    const [x, y] = this.screen([b.x, b.y]);
-    const w = b.w * this.zoom, h = b.h * this.zoom;
-    if (BOXY.has(s.type) && s.type !== "text") {
-      out.push(div().absolute().left(x + w - HANDLE / 2).top(y + h - HANDLE / 2).size(HANDLE)
-        .bg(this.t.background).border_1().border_color(SELECT).rounded(2));
+    if (!BOXY.has(s.type)) return;
+    const o = this.outline(bbox(s, byId));
+    // Each edge: an unseen strip along it, showing the resize pointer.
+    for (const [name, fx] of EDGES) {
+      const strip = fx === 0.5
+        ? div().left(o.l + HANDLE / 2).w(Math.max(0, o.r - o.l - HANDLE)).top((name === "n" ? o.t : o.b) - EDGE).h(2 * EDGE)
+        : div().top(o.t + HANDLE / 2).h(Math.max(0, o.b - o.t - HANDLE)).left((name === "w" ? o.l : o.r) - EDGE).w(2 * EDGE);
+      out.push(strip.id(`sketch-edge-${name}`).absolute()[HANDLE_CURSOR[name]]());
+    }
+    for (const [name, fx, fy] of CORNERS) {
+      out.push(div().id(`sketch-handle-${name}`).absolute().left((fx ? o.r : o.l) - HANDLE / 2).top((fy ? o.b : o.t) - HANDLE / 2).size(HANDLE)
+        .bg(this.t.background).border_1().border_color(SELECT).rounded(2)[HANDLE_CURSOR[name]]());
     }
   }
 
@@ -881,6 +1227,7 @@ export default class Sketch extends View {
     for (const s of this.shapes) this.paint(s, byId, layers);
     this.drawSelection(byId, layers);
     this.editor(layers);
+    this.drawMenu(layers);
     const first = this.selection()[0];
     const cursor = this.drag?.kind === "pan" ? "grabbing" : this.spaceStillDown() ? "grab" : this.tool === "select" ? "default" : "crosshair";
 
@@ -910,6 +1257,7 @@ export default class Sketch extends View {
       .when(cursor === "grabbing", (el) => el.cursor_grabbing())
       .when(cursor === "grab", (el) => el.cursor_grab())
       .on_mouse_down("left", (e, cx) => { this.down(e, cx); cx.notify(); })
+      .on_mouse_down("right", (e, cx) => this.openMenu(e, cx))
       .on_mouse_down("middle", (e, cx) => {
         cx.stop_propagation();
         const l = this.local(e);
@@ -939,7 +1287,7 @@ export default class Sketch extends View {
       .child(canvas)
       .when(this.bars, (el) => el.child(h_flex().id("sketch-hints").flex_none().h(24).px(10).items_center().gap(12).border_t(1).border_color(t.border).bg(t.chrome)
         .text_size(11).text_color(t.dim)
-        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌘V paste image · ⌫ delete · ⌘Z undo · M hide bars")
+        .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌘C ⌘V copy/paste · ⌘D duplicate · ⌘G group · right-click for more · drag corners or edges to resize · ⌫ delete · ⌘Z undo · M hide bars")
         .child(div().flex_1())
         .child("data/sketch/board.json")));
   }
