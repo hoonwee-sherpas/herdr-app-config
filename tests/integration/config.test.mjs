@@ -78,3 +78,7 @@ test("⌘D in a Sketch board duplicates instead of splitting the pane", () => {
   // and ⌘⇧G ungroups instead of toggling the GitHub panel
   assert.equal(JSON.parse(read("keys.json"))["mod:Sketch"]["cmd-shift-g"], "Sketch.ungroup");
 });
+
+test("⌘⇧E in main-linear opens Sketch through the tab bar, which tells it the worktree", () => {
+  assert.equal(JSON.parse(read("keys.json"))["layout:main-linear"]["cmd-shift-e"], "tabs-linear.sketch");
+});

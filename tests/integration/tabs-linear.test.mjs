@@ -10,7 +10,7 @@ import Tabs from "../../mods/tabs-linear/main.js";
 beforeEach(() => {
   host.reset();
   localStorage.clear();
-  host.spaces = [{ id: "s", active: true, tabs: [{ id: "t", name: "1", active: true }] }];
+  host.spaces = [{ id: "s", active: true, folder: "/work/app", machine: null, tabs: [{ id: "t", name: "1", active: true }] }];
   host.layout = { id: "root", children: [{ id: "panel", hidden: true, children: [{ id: "panel-body", type: "stack", active: "files" }] }] };
 });
 
@@ -32,7 +32,8 @@ test("the Sketch button sits right after Linear", async () => {
 test("it opens a Sketch pane, or closes this tab's one", async () => {
   const { v, cx } = await mount();
   byId(v.render(), "pane-sketch").handlers.on_click({}, cx);
-  assert.deepEqual(host.ran("pane.split"), [{ direction: "right", mod: "Sketch" }]);
+  // It's told the space's folder, so it opens that worktree's board.
+  assert.deepEqual(host.ran("pane.split"), [{ direction: "right", mod: "Sketch", props: { folder: "/work/app", machine: null } }]);
   host.panes = [{ pane: "pz", mod: "Sketch", tab: "t" }];
   const button = byId(v.render(), "pane-sketch");
   assert.equal(button.props.bg, host.theme.selected, "lit while open");
@@ -67,4 +68,15 @@ test("the tabs-linear.github command opens the GitHub panel, and closes it when 
   host.command("github");
   await cx.settle();
   assert.deepEqual(host.ran("layout.hide"), [{ id: "panel" }]);
+});
+
+test("the sketch command (⌘⇧E in this layout) opens or closes this tab's Sketch the same way", async () => {
+  const { cx } = await mount();
+  host.command("sketch");
+  await cx.settle();
+  assert.deepEqual(host.ran("pane.split"), [{ direction: "right", mod: "Sketch", props: { folder: "/work/app", machine: null } }]);
+  host.panes = [{ pane: "pz", mod: "Sketch", tab: "t" }];
+  host.command("sketch");
+  await cx.settle();
+  assert.deepEqual(host.ran("pane.close"), [{ pane: "pz" }]);
 });

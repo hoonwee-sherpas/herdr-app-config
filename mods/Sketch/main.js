@@ -1,7 +1,10 @@
 // Sketch: a whiteboard pane (⌘⇧E splits one open) drawn natively (no browser). Boxes, ellipses,
 // diamonds, arrows that stay attached to shapes, lines, a pen and text.
-// The board is a JSON file (data/sketch/board.json, format in FORMAT.md), saved
-// as you draw and reloaded when something else (an AI agent) changes it.
+// Each worktree has its own board: a JSON file (data/sketch/boards/<slug>/board.json,
+// format in FORMAT.md; data/sketch/boards.json says whose each is), saved as you
+// draw and reloaded when something else (an AI agent) changes it. The pane's
+// worktree is the git root of its props' folder, else of its space's folder; the
+// home folder (or none) keeps the old shared data/sketch/board.json.
 //
 // Keys: V select · R box · O ellipse · D diamond · A arrow · L line · P pen ·
 // T text · I insert images · ⌘C / ⌘X / ⌘V copy, cut, paste (shapes, or a
@@ -9,8 +12,8 @@
 // (⌘D and ⌘⇧G come as commands, see keys.json) · right-click for a menu ·
 // ⌫ delete · ↵ / double-click edit text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect ·
 // M hide or show the toolbar and hint line (remembered).
-// Pictures dropped from Finder are added too; each is kept as a PNG in
-// data/sketch/images/.
+// Pictures dropped from Finder are added too; each is kept as a PNG in the
+// board's images/ folder.
 // Mouse: drag empty space to select the shapes inside a box, ⇧-click to add
 // or remove one, drag a selected shape to move the whole selection. Hold Space
 // (or the middle button) and drag to pan, scroll to pan, ⌘ or ctrl + scroll to
@@ -22,10 +25,36 @@
 import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse } from "./rough.js";
-import { appHome, readTextFile, writeTextFile, watchFolder, exec, theme, settings, nextCommand } from "herdr";
+import { appHome, home, readTextFile, writeTextFile, watchFolder, exec, theme, settings, nextCommand,
+  props, spaces, panes, focused } from "herdr";
 
-const DIR = () => `${appHome()}/data/sketch`;
-const FILE = () => `${DIR()}/board.json`;
+// Boards, relative to the app's folder: the old shared one, and one per worktree.
+const LEGACY = "data/sketch";
+const BOARDS = "data/sketch/boards";
+const INDEX = "data/sketch/boards.json";
+
+/** A worktree's board folder name: its last two folders (and machine), readable, plus a hash of the whole path. */
+export function boardSlug(root, machine) {
+  const safe = (x) => x.replace(/[^\w.-]+/g, "_");
+  let h = 5381;
+  for (const ch of `${machine ?? ""}:${root}`) h = (Math.imul(h, 33) ^ ch.charCodeAt(0)) >>> 0;
+  const parts = String(root).split("/").filter(Boolean).slice(-2).map(safe);
+  return [...(machine ? [safe(machine)] : []), ...parts, h.toString(16).padStart(8, "0")].join("-");
+}
+
+// The space this pane is in: the one every Sketch pane is in, else the focused
+// Sketch pane's, else the focused (or shown) space. (A mod pane isn't told its pane.)
+function ownSpace() {
+  const all = spaces() ?? [];
+  const spaceOf = (tab) => all.find((s) => (s.tabs ?? []).some((t) => t.id === tab));
+  const mine = (panes() ?? []).filter((p) => p.mod === "Sketch");
+  const ids = new Set(mine.map((p) => spaceOf(p.tab)?.id).filter(Boolean));
+  if (ids.size === 1) return all.find((s) => s.id === [...ids][0]);
+  const lit = mine.find((p) => p.focused);
+  if (lit && spaceOf(lit.tab)) return spaceOf(lit.tab);
+  const f = focused();
+  return all.find((s) => s.id === f?.space) ?? all.find((s) => s.active) ?? null;
+}
 
 const INK = "#1e1e1e";
 const SELECT = "#4c6ef5";
@@ -314,6 +343,9 @@ export default class Sketch extends View {
     this.pastedText = null;
     this.ranAt = {};        // when a key that also comes as a command last ran, by name
     this.menu = null;       // the right-click menu: { x, y } on screen, `at` in the world
+    // Which board: set once the pane knows its worktree (locate()).
+    this.rel = null;        // its folder, relative to the app's
+    this.where = null;      // { root, machine, branch }, or null for the old shared board
     this.done = false;
     this.handle = cx.focus_handle();
     this.input = InputState.new({ placeholder: "Text" });
@@ -334,8 +366,13 @@ export default class Sketch extends View {
     });
     cx.spawn(async (cx) => {
       try {
-        await exec("mkdir", ["-p", DIR()]);
-        const text = await readTextFile(FILE());
+        this.where = await this.locate();
+      } catch { this.where = null; }
+      this.rel = this.where ? `${BOARDS}/${boardSlug(this.where.root, this.where.machine)}` : LEGACY;
+      try {
+        await exec("mkdir", ["-p", this.dir()]);
+        if (this.where) await this.index();
+        const text = await readTextFile(this.file());
         this.fileText = text;
         if (text) this.shapes = parse(text);
       } catch (e) {
@@ -344,9 +381,9 @@ export default class Sketch extends View {
       cx.notify();
       // Reload when the file changes from outside (an agent edited it).
       for (;;) {
-        await watchFolder(DIR());
+        await watchFolder(this.dir());
         if (this.done) return;
-        const text = await readTextFile(FILE());
+        const text = await readTextFile(this.file());
         if (text == null || text === this.fileText || text === this.writing) continue;
         this.fileText = text;
         try {
@@ -361,6 +398,50 @@ export default class Sketch extends View {
         cx.notify();
       }
     });
+  }
+
+  // ---- which board
+
+  dir() { return `${appHome()}/${this.rel}`; }
+  file() { return `${this.dir()}/board.json`; }
+
+  // This pane's worktree: { root, machine, branch }, or null for the old shared board.
+  async locate() {
+    const p = props() ?? {};
+    let folder = typeof p.folder === "string" ? p.folder : null;
+    let machine = p.machine ?? null;
+    if (folder == null) { const s = ownSpace(); folder = s?.folder ?? null; machine = s?.machine ?? null; }
+    if (!folder || folder === "~") return null;
+    const on = machine ? { on: machine } : {};
+    const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: folder, ...on });
+    const inGit = top.code === 0 && top.stdout.trim();
+    const root = inGit ? top.stdout.trim() : folder.replace(/\/+$/, "");
+    if (root === home()) return null; // the home folder (a dotfiles repo, say): the old shared board
+    const br = inGit ? await exec("git", ["branch", "--show-current"], { cwd: root, ...on }) : null;
+    return { root, machine, branch: br?.code === 0 ? br.stdout.trim() || null : null };
+  }
+
+  // Notes this board in data/sketch/boards.json, so an agent in the worktree can find it.
+  async index() {
+    const path = `${appHome()}/${INDEX}`;
+    for (let i = 0; i < 3; i++) {
+      const before = await readTextFile(path);
+      let all = {};
+      try { all = before ? JSON.parse(before) : {}; } catch { all = {}; }
+      const key = this.where.machine ? `${this.where.machine}:${this.where.root}` : this.where.root;
+      const entry = { board: `${this.rel}/board.json`, branch: this.where.branch, machine: this.where.machine };
+      if (JSON.stringify(all[key]) === JSON.stringify(entry)) return;
+      all[key] = entry;
+      try { await writeTextFile(path, `${JSON.stringify(all, null, 2)}\n`, before); return; } catch { /* changed meanwhile: again */ }
+    }
+  }
+
+  // The worktree and branch, for the hint line.
+  boardLabel() {
+    if (!this.rel) return "";
+    if (!this.where) return `${LEGACY}/board.json`;
+    const name = this.where.root.split("/").filter(Boolean).pop() ?? this.where.root;
+    return [this.where.machine, name, this.where.branch].filter(Boolean).join(" · ");
   }
 
   // ---- state
@@ -403,15 +484,16 @@ export default class Sketch extends View {
     const seq = ++this.saveSeq;
     cx.timer.after(300, (cx) => {
       if (seq !== this.saveSeq) return;
+      if (!this.rel) { this.save(cx); return; } // not sure of the board yet
       const text = serialize(this.shapes);
       if (text === this.fileText) return;
       this.writing = text;
       cx.spawn(async (cx) => {
         try {
-          await writeTextFile(FILE(), text, this.fileText);
+          await writeTextFile(this.file(), text, this.fileText);
         } catch {
           // The file changed under us; ours is newer, so replace it.
-          try { await writeTextFile(FILE(), text, await readTextFile(FILE())); } catch (e) { this.error = `save: ${e?.message ?? e}`; }
+          try { await writeTextFile(this.file(), text, await readTextFile(this.file())); } catch (e) { this.error = `save: ${e?.message ?? e}`; }
         }
         this.fileText = text;
         cx.notify();
@@ -605,7 +687,7 @@ export default class Sketch extends View {
 
   // Puts the selection on the system clipboard as text.
   copy(cx) {
-    cx.write_to_clipboard(JSON.stringify({ [CLIP_KEY]: 1, shapes: detach(this.selection(), this.byId()) }));
+    cx.write_to_clipboard(JSON.stringify({ [CLIP_KEY]: 1, board: this.rel, shapes: detach(this.selection(), this.byId()) }));
   }
 
   // Adds `list` (detached shapes) moved by (dx, dy) as one undo step, and selects them.
@@ -627,12 +709,30 @@ export default class Sketch extends View {
   // view has moved away from land in its middle.
   paste(cx, at) {
     const text = cx.read_from_clipboard?.();
-    let list = null;
+    let list = null, from = null;
     try {
       const d = text ? JSON.parse(text) : null;
-      if (d?.[CLIP_KEY] && Array.isArray(d.shapes)) list = d.shapes.filter((s) => s && typeof s.type === "string");
+      if (d?.[CLIP_KEY] && Array.isArray(d.shapes)) {
+        list = d.shapes.filter((s) => s && typeof s.type === "string").map((s) => ({ ...s }));
+        from = typeof d.board === "string" ? d.board : null;
+      }
     } catch { /* not ours */ }
     if (!list?.length) { this.addImages(["clipboard"], cx); return; }
+    // Pictures from another board: copies of their files come into this one's.
+    if (from && from !== this.rel && this.rel) {
+      const files = [];
+      for (const s of list) {
+        if (s.type !== "image" || typeof s.src !== "string") continue;
+        const name = `images/${newId()}.png`;
+        files.push([`${appHome()}/${from}/${s.src}`, `${this.dir()}/${name}`]);
+        s.src = name;
+      }
+      if (files.length) cx.spawn(async (cx) => {
+        await exec("mkdir", ["-p", `${this.dir()}/images`]);
+        for (const [a, b] of files) await exec("cp", [a, b]);
+        cx.notify();
+      });
+    }
     this.pasted = this.pastedText === text ? this.pasted + 1 : 1;
     this.pastedText = text;
     const byId = new Map(list.map((s) => [s.id, s]));
@@ -808,8 +908,8 @@ export default class Sketch extends View {
       for (const src of sources) {
         const id = newId();
         try {
-          await exec("mkdir", ["-p", `${DIR()}/images`]);
-          const r = await exec("osascript", ["-l", "JavaScript", "-e", TO_PNG, src, `${DIR()}/images/${id}.png`]);
+          await exec("mkdir", ["-p", `${this.dir()}/images`]);
+          const r = await exec("osascript", ["-l", "JavaScript", "-e", TO_PNG, src, `${this.dir()}/images/${id}.png`]);
           if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `exit ${r.code}`);
           const [w, h] = r.stdout.trim().split(" ").map(Number);
           if (w > 0 && h > 0) added.push({ id, type: "image", src: `images/${id}.png`, x: 0, y: 0, w, h });
@@ -1059,7 +1159,7 @@ export default class Sketch extends View {
       if (typeof s.src !== "string") return;
       const b = norm(s);
       const [x, y] = this.screen([b.x, b.y]);
-      out.push(image(`data/sketch/${s.src}`).absolute().left(x).top(y).w(b.w * z).h(b.h * z));
+      out.push(image(`${this.rel ?? LEGACY}/${s.src}`).absolute().left(x).top(y).w(b.w * z).h(b.h * z));
       return;
     }
     if (SHAPE_PATH[s.type]) {
@@ -1289,6 +1389,6 @@ export default class Sketch extends View {
         .text_size(11).text_color(t.dim)
         .child("drag to select · ⇧-click adds · Space+drag or scroll to pan · ⌘ scroll to zoom · double-click for text · ⌘C ⌘V copy/paste · ⌘D duplicate · ⌘G group · right-click for more · drag corners or edges to resize · ⌫ delete · ⌘Z undo · M hide bars")
         .child(div().flex_1())
-        .child("data/sketch/board.json")));
+        .child(this.boardLabel())));
   }
 }

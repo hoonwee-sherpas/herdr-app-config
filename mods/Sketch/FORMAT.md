@@ -1,7 +1,18 @@
 # Sketch board format
 
-The Sketch pane (⌘⇧E) shows `~/.config/herdr-app/data/sketch/board.json`
-and reloads it the moment it changes, so an agent draws by editing that file.
+Each git worktree has its own board. The Sketch pane (⌘⇧E) shows the one for
+its space's worktree and reloads it the moment it changes, so an agent draws by
+editing that file. To find yours, look up your worktree's root
+(`git rev-parse --show-toplevel`) in `~/.config/herdr-app/data/sketch/boards.json`:
+
+```json
+{ "/Users/me/code/app-wt": { "board": "data/sketch/boards/code-app-wt-1a2b3c4d/board.json", "branch": "feat/login", "machine": null } }
+```
+
+`board` is relative to `~/.config/herdr-app`; on another machine the key is
+`<machine>:<root>`. A worktree only gets an entry once a Sketch pane has shown it.
+The home folder (and anything outside a space) keeps the old shared board,
+`data/sketch/board.json`.
 
 ```json
 { "version": 1, "shapes": [ { "id": "api", "type": "rect", ... }, ... ] }
@@ -15,7 +26,7 @@ Later shapes are drawn on top. Coordinates are world pixels; y grows downward.
 | `text` | `x`, `y` (top left), `text`, optional `fontSize` (default 20) |
 | `arrow`, `line` | `from` / `to`: ids of shapes to attach to (the ends follow those shapes), or `points`: `[[x, y], ...]`; optional `text` (label at the middle) |
 | `pen` | `points`: `[[x, y], ...]` (freehand) |
-| `image` | `x`, `y`, `w`, `h`, `src`: a picture's path relative to `data/sketch/` (put it in `data/sketch/images/`, e.g. `images/flow.png`) |
+| `image` | `x`, `y`, `w`, `h`, `src`: a picture's path relative to the board's folder (put it in that folder's `images/`, e.g. `images/flow.png`) |
 
 Optional on every shape: `color` (ink, default `#1e1e1e`), `width` (stroke, default 2),
 `dashed: true`, `fontSize` (label size, default 16), `rough: false` (draw this shape with

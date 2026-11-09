@@ -2,6 +2,21 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings, nextCommand } from "herdr";
 
+// The shown tab's Sketch pane, if it has one.
+function sketchPane() {
+  const tab = spaces().find(s => s.active)?.tabs?.find(c => c.active);
+  return panes().find(p => p.mod === "Sketch" && p.tab === tab?.id);
+}
+
+// Closes the shown tab's Sketch, or opens one beside the focused pane, told
+// the space's folder so it shows that worktree's board.
+function toggleSketch() {
+  const open = sketchPane();
+  if (open) { run("pane.close", { pane: open.pane }); return; }
+  const space = spaces().find(s => s.active);
+  run("pane.split", { direction: "right", mod: "Sketch", props: { folder: space?.folder ?? null, machine: space?.machine ?? null } });
+}
+
 function find(node, id) {
   if (node?.id === id) return node;
   for (const child of node?.children ?? []) {
@@ -19,6 +34,7 @@ export default class Tabs extends View {
     cx.spawn(async () => {
       for (;;) {
         const which = await nextCommand();
+        if (which === "sketch") { toggleSketch(); continue; }
         if (which !== "linear" && which !== "github") continue;
         const panel = find(layout(), "panel"), body = find(layout(), "panel-body");
         if (panel && !panel.hidden && body?.active === which) run("layout.hide", { id: "panel" });
@@ -101,14 +117,12 @@ export default class Tabs extends View {
     };
     // Sketch is a split pane, not a side panel: opens one beside the focused
     // pane of this tab, or closes the one already there.
-    const tab = shown.find(c => c.active);
-    const sketch = panes().find(p => p.mod === "Sketch" && p.tab === tab?.id);
+    const sketch = sketchPane();
     const sketchButton = () => h_flex().id("pane-sketch").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
       .text_size(12).bg(sketch ? t.selected : t.chrome).text_color(sketch ? t.foreground : t.muted)
       .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
       .on_click(() => {
-        if (sketch) run("pane.close", { pane: sketch.pane });
-        else run("pane.split", { direction: "right", mod: "Sketch" });
+        toggleSketch();
       }).child(svg("mods/Sketch/sketch.svg").size(14)).child("Sketch");
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .on_mouse_up("left", () => { this.pressed = null; })

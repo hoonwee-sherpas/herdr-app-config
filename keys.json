@@ -80,7 +80,8 @@
   },
   "layout:main-linear": {
     "cmd-shift-i": "tabs-linear.linear",
-    "cmd-shift-g": "tabs-linear.github"
+    "cmd-shift-g": "tabs-linear.github",
+    "cmd-shift-e": "tabs-linear.sketch"
   },
   "mod:Sketch": {
     "cmd-d": "Sketch.duplicate",
