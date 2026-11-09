@@ -7,6 +7,7 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex, TextView } from "gpui-base";
 import { spaces, shared, theme, run, exec } from "herdr";
+import { details, keepDetail, fresh, PRS_TTL } from "./common.js";
 import { gh, errorText, DETAIL_KEY, oneCheck, prState, runState, since, took, cleanBody, linearIds,
   linearKeys, openLinear, spacesForBranch, makeWorktree, prIcon, stateIcon, iconButton, COLOR } from "./common.js";
 
@@ -46,19 +47,26 @@ export class Detail {
     cx.timer.every(400, check);
   }
 
-  load(want, cx) {
+  // Shows a PR or run: from the cache at once when it's there; asked from
+  // GitHub when it isn't, is over a minute old, is a run still going, or `force` (↻).
+  load(want, cx, force = false) {
     const key = JSON.stringify(want);
-    if (key !== this.key) { this.item = null; this.openJobs.clear(); this.log = null; this.note = null; }
+    const cacheKey = `${want.kind}|${want.repo}|${want.id}`;
+    const hit = details.get(cacheKey) ?? null;
+    if (key !== this.key) { this.item = hit?.data ?? null; this.openJobs.clear(); this.log = null; this.note = null; }
     this.key = key;
     this.want = want;
-    this.loading = true;
     this.error = null;
+    const going = want.kind === "run" && hit && ["running", "queued"].includes(runState(hit.data));
+    if (!force && fresh(hit, PRS_TTL) && !going) { this.loading = false; cx.notify(); return; }
+    this.loading = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
         const item = want.kind === "pr"
           ? await gh(["pr", "view", String(want.id), "-R", want.repo, "--json", PR_FIELDS])
           : await gh(["run", "view", String(want.id), "-R", want.repo, "--json", RUN_FIELDS]);
+        keepDetail(cacheKey, item);
         if (this.key === key) this.item = item;
       } catch (e) {
         if (this.key === key) this.error = errorText(e);
@@ -68,7 +76,7 @@ export class Detail {
     });
   }
 
-  reload(cx) { if (this.want) this.load(this.want, cx); }
+  reload(cx) { if (this.want) this.load(this.want, cx, true); }
 
   // A write to GitHub (re-run, cancel), then a fresh look.
   act(args, done, cx) {

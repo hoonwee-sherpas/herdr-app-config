@@ -4,10 +4,10 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { host } from "herdr";
-import { makeCx } from "../fakes/cx.mjs";
+import { makeCx, mouse } from "../fakes/cx.mjs";
 import { byId, all, text } from "../fakes/element.mjs";
 import GitHub from "../../mods/github/main.js";
-import { DETAIL_KEY } from "../../mods/github/common.js";
+import { DETAIL_KEY, details } from "../../mods/github/common.js";
 
 const REPO = "sherpas-team/basecamp";
 const ok = (data) => ({ code: 0, stdout: typeof data === "string" ? data : JSON.stringify(data), stderr: "" });
@@ -32,6 +32,7 @@ let gh, calls;
 beforeEach(() => {
   host.reset();
   localStorage.clear();
+  details.clear();
   host.spaces = [
     { id: "s1", name: "basecamp", folder: "/r/basecamp", machine: null, branch: "main", active: true, tabs: [] },
     { id: "s2", name: "login fix", folder: "/w/prd-2", machine: null, branch: "feature/prd-2", tabs: [] },
@@ -51,6 +52,8 @@ beforeEach(() => {
       wr(12, "CI", "2026-11-06T02:00:00Z", { conclusion: "failure", headBranch: "feature/prd-1", event: "pull_request" }),
       ...[13, 14, 15, 16].map((id) => wr(id, "CI", `2026-11-05T0${id - 10}:00:00Z`))],
     other: { "sherpas-team/website": [pr(77, "Website PR")] },
+    workflows: [{ id: 3, name: "Lint", state: "active" }, { id: 1, name: "CI", state: "active" },
+      { id: 9, name: "Old", state: "disabled_manually" }, { id: 2, name: "Deploy", state: "active" }],
   };
   host.exec = async (cmd, args, opts) => {
     if (cmd === "git" && args.join(" ") === "remote get-url origin") {
@@ -74,6 +77,14 @@ beforeEach(() => {
       const nodes = hits.slice(from, from + n);
       return ok({ data: { search: { issueCount: gh.closedTotal ?? hits.length, nodes,
         pageInfo: { hasNextPage: from + n < hits.length, endCursor: `c${from + nodes.length}` } } } });
+    }
+    if (/^api repos\/\S+\/actions\/workflows\?per_page=100$/.test(a)) return ok({ total_count: gh.workflows.length, workflows: gh.workflows });
+    const wfPage = a.match(/^api repos\/\S+\/actions\/workflows\/(\d+)\/runs\?per_page=(\d+)&page=(\d+)$/);
+    if (wfPage) {
+      const [, id, per, page] = wfPage.map(Number);
+      const name = gh.workflows.find((w) => w.id === id)?.name;
+      const sorted = gh.runs.filter((r) => r.workflowName === name).sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+      return ok({ total_count: sorted.length, workflow_runs: sorted.slice((page - 1) * per, page * per).map(rest) });
     }
     // Runs: the REST API, pages by number, newest first.
     const runsPage = a.match(/^api repos\/(\S+)\/actions\/runs\?per_page=(\d+)&page=(\d+)$/);
@@ -207,31 +218,75 @@ test("gh's error is shown, not thrown", async () => {
 
 // ---- Actions
 
-test("Actions groups runs by workflow, the most recently active first", async () => {
-  const { v, cx } = await mount();
-  click(v, cx, "gh-actions");
-  await cx.settle();
-  const root = v.render();
-  const heads = all(root, (e) => /^gh-wf-[^m]/.test(String(e.props.id)) && !String(e.props.id).startsWith("gh-wf-more")).map((e) => e.props.id);
-  assert.deepEqual(heads, ["gh-wf-Deploy", "gh-wf-CI"]);
-  assert.match(text(byId(root, "gh-run-12")), /CI run 12.*feature\/prd-1.*pull_request/);
-  const icons = (id) => all(byId(root, id), (e) => e.kind === "svg").map((e) => e.arg);
+const navIds = (v) => all(v.render(), (e) => /^gh-nav-/.test(String(e.props.id))).map((e) => e.props.id);
+const runIds = (v) => all(v.render(), (e) => /^gh-run-\d+$/.test(String(e.props.id))).map((e) => Number(e.props.id.slice(7)));
+const lastRunsCall = () => ran("api repos/").filter((a) => a[1].includes("/runs?")).at(-1)?.[1];
+async function actions() {
+  const m = await mount();
+  click(m.v, m.cx, "gh-actions");
+  await m.cx.settle();
+  return m;
+}
+
+test("Actions: a side nav lists All and the repo's active workflows by name", async () => {
+  const { v } = await actions();
+  assert.deepEqual(navIds(v), ["gh-nav-*", "gh-nav-1", "gh-nav-2", "gh-nav-3"], "All, CI, Deploy, Lint; not the disabled one");
+  assert.match(text(byId(v.render(), "gh-nav-1")), /CI/);
+  assert.equal(byId(v.render(), "gh-nav-*").props.bg, host.theme.selected);
+});
+
+test("All shows every run on the page, newest first, each naming its workflow", async () => {
+  const { v } = await actions();
+  assert.deepEqual(runIds(v), [11, 12, 10, 16, 15, 14, 13]);
+  assert.match(text(byId(v.render(), "gh-run-12")), /CI.*feature\/prd-1.*pull_request/);
+  const icons = (id) => all(byId(v.render(), id), (e) => e.kind === "svg").map((e) => e.arg);
   assert.ok(icons("gh-run-12").includes("mods/github/check-failure.svg"));
   assert.ok(icons("gh-run-11").includes("mods/workspace-chrome/spinner.svg"), "running spins");
 });
 
-test("a workflow shows its newest three runs until asked for more, and folds", async () => {
-  const { v, cx } = await mount();
-  click(v, cx, "gh-actions");
+test("picking a workflow asks GitHub for that workflow's runs, and is remembered for the repo", async () => {
+  const first = await actions();
+  click(first.v, first.cx, "gh-nav-1");
+  await first.cx.settle();
+  assert.equal(lastRunsCall(), `repos/${REPO}/actions/workflows/1/runs?per_page=30&page=1`);
+  assert.deepEqual(runIds(first.v), [12, 10, 16, 15, 14, 13]);
+  const { v } = await actions();
+  assert.equal(lastRunsCall(), `repos/${REPO}/actions/workflows/1/runs?per_page=30&page=1`);
+  assert.equal(byId(v.render(), "gh-nav-1").props.bg, host.theme.selected);
+});
+
+test("a workflow pages through its own runs, and another workflow starts at page 1", async () => {
+  gh.runs = Array.from({ length: 75 }, (_, i) => wr(900 - i, "CI", new Date(Date.UTC(2026, 10, 6, 12) - i * 60000).toISOString()));
+  const { v, cx } = await actions();
+  click(v, cx, "gh-nav-1");
   await cx.settle();
-  const runIds = () => all(v.render(), (e) => /^gh-run-\d+$/.test(String(e.props.id))).map((e) => Number(e.props.id.slice(7)));
-  assert.deepEqual(runIds(), [11, 12, 10, 16]);
-  assert.match(text(byId(v.render(), "gh-wf-more-CI")), /3 more/);
-  click(v, cx, "gh-wf-more-CI");
-  assert.deepEqual(runIds(), [11, 12, 10, 16, 15, 14, 13]);
-  assert.equal(byId(v.render(), "gh-wf-more-CI"), null);
-  click(v, cx, "gh-wf-CI");
-  assert.deepEqual(runIds(), [11]);
+  assert.equal(pager(v), "Page 1 of 3");
+  click(v, cx, "gh-page-next");
+  await cx.settle();
+  assert.equal(lastRunsCall(), `repos/${REPO}/actions/workflows/1/runs?per_page=30&page=2`);
+  click(v, cx, "gh-nav-2");
+  await cx.settle();
+  assert.equal(lastRunsCall(), `repos/${REPO}/actions/workflows/2/runs?per_page=30&page=1`);
+});
+
+test("the search on top narrows the nav's workflows and the page's runs", async () => {
+  const { v, cx } = await actions();
+  v.runSearch.type("dep", cx);
+  assert.deepEqual(navIds(v), ["gh-nav-*", "gh-nav-2"]);
+  assert.deepEqual(runIds(v), [11]);
+  v.runSearch.type("#12", cx);
+  assert.deepEqual(runIds(v), [12]);
+  v.runSearch.type("prd-1", cx);
+  assert.deepEqual(runIds(v), [12], "branches match");
+  v.runSearch.type("zzz", cx);
+  assert.match(text(v.render()), /Nothing on this page matches/);
+});
+
+test("a remembered workflow that's gone falls back to All", async () => {
+  localStorage.setItem("workflow", JSON.stringify({ [REPO]: 404 }));
+  const { v } = await actions();
+  assert.equal(lastRunsCall(), `repos/${REPO}/actions/runs?per_page=30&page=1`);
+  assert.equal(byId(v.render(), "gh-nav-*").props.bg, host.theme.selected);
 });
 
 test("clicking a run shows it in the detail block", async () => {
@@ -369,6 +424,7 @@ test("Re-run failed jobs asks gh to rerun them; a running run can be canceled", 
   assert.deepEqual(ran("run rerun").at(-1), ["run", "rerun", "12", "--failed", "-R", REPO]);
   assert.equal(byId(m.v.render(), "ghd-cancel"), null, "a finished run can't be canceled");
   gh.run = runView({ status: "in_progress", conclusion: "" });
+  details.get(`run|${REPO}|12`).at -= 2 * 60 * 1000; // a while later
   m = await detail({ repo: REPO, kind: "run", id: 12 });
   assert.equal(byId(m.v.render(), "ghd-rerun"), null);
   click(m.v, m.cx, "ghd-cancel");
@@ -487,14 +543,14 @@ test("Closed counts at most GitHub's 1000 search results", async () => {
 });
 
 const runsAt = (n) => Array.from({ length: n }, (_, i) => wr(500 - i, ["CI", "Lint", "Deploy"][i % 3], new Date(Date.UTC(2026, 10, 6, 12) - i * 60000).toISOString()));
-const runPages = () => ran("api repos/").map((a) => Number(a[1].match(/page=(\d+)$/)[1]));
+const runPages = () => ran("api repos/").filter((a) => a[1].includes("/runs?")).map((a) => Number(a[1].match(/page=(\d+)$/)[1]));
 
-test("Actions shows 30 runs a page, grouped, and pages by number", async () => {
+test("Actions shows 30 runs a page, and pages by number", async () => {
   gh.runs = runsAt(75);
   const { v, cx } = await mount();
   click(v, cx, "gh-actions");
   await cx.settle();
-  assert.match(ran("api repos/")[0][1], /^repos\/sherpas-team\/basecamp\/actions\/runs\?per_page=30&page=1$/);
+  assert.match(ran("api repos/").filter((a) => a[1].includes("/runs?"))[0][1], /^repos\/sherpas-team\/basecamp\/actions\/runs\?per_page=30&page=1$/);
   assert.equal(pager(v), "Page 1 of 3");
   click(v, cx, "gh-page-next");
   await cx.settle();
@@ -566,4 +622,254 @@ test("a filter or search set on Open applies when you switch to Closed", async (
   click(v, cx, "gh-closed");
   await cx.settle();
   assert.match(searches().at(-1).q, /author:@me redirect$/);
+});
+
+test("while searching, the picked workflow stays in the nav, marked", async () => {
+  const { v, cx } = await actions();
+  click(v, cx, "gh-nav-1");
+  await cx.settle();
+  v.runSearch.type("dep", cx);
+  assert.deepEqual(navIds(v), ["gh-nav-*", "gh-nav-1", "gh-nav-2"]);
+  assert.equal(byId(v.render(), "gh-nav-1").props.bg, host.theme.selected);
+});
+
+test("the workflow nav is resizable by its edge, and keeps its width", async () => {
+  const first = await actions();
+  const w = () => byId(first.v.render(), "gh-nav").props.w;
+  const start = w();
+  byId(first.v.render(), "gh-nav/resize").handlers["on_mouse_down:left"](mouse(400, 50), first.cx);
+  byId(first.v.render(), "gh-nav/pane").handlers.on_mouse_move(mouse(440, 50), first.cx);
+  byId(first.v.render(), "gh-nav/pane").handlers["on_mouse_up:left"](mouse(440, 50), first.cx);
+  assert.equal(w(), start + 40);
+  const { v } = await actions();
+  assert.equal(byId(v.render(), "gh-nav").props.w, start + 40);
+});
+
+// ---- the Actions cache: a page seen in the last minute shows without asking GitHub
+const runsCalls = () => ran("api repos/").filter((a) => a[1].includes("/runs?")).length;
+const age = (key, ms) => { host.shared["github.cache"][key].at -= ms; };
+
+test("going back to a workflow seen a moment ago shows it at once, without asking GitHub", async () => {
+  const { v, cx } = await actions();
+  click(v, cx, "gh-nav-1");
+  await cx.settle();
+  const asked = runsCalls();
+  click(v, cx, "gh-nav-*");
+  assert.deepEqual(runIds(v), [11, 12, 10, 16, 15, 14, 13], "All, straight from the cache");
+  click(v, cx, "gh-nav-1");
+  assert.deepEqual(runIds(v), [12, 10, 16, 15, 14, 13]);
+  await cx.settle();
+  assert.equal(runsCalls(), asked, "no new requests");
+});
+
+test("a cached page older than a minute shows at once, then refreshes", async () => {
+  const { v, cx } = await actions();
+  click(v, cx, "gh-nav-1");
+  await cx.settle();
+  age(`runs|${REPO}|1|1`, 2 * 60 * 1000);
+  gh.runs = [wr(99, "CI", "2026-11-06T09:00:00Z"), ...gh.runs];
+  const asked = runsCalls();
+  click(v, cx, "gh-nav-*");
+  await cx.settle();
+  click(v, cx, "gh-nav-1");
+  assert.deepEqual(runIds(v), [12, 10, 16, 15, 14, 13], "the old answer first");
+  await cx.settle();
+  assert.equal(runsCalls(), asked + 1, "only the stale page is asked again");
+  assert.deepEqual(runIds(v).slice(0, 1), [99]);
+});
+
+test("paging back to a page seen a moment ago doesn't ask GitHub", async () => {
+  gh.runs = runsAt(75);
+  const { v, cx } = await actions();
+  click(v, cx, "gh-page-next");
+  await cx.settle();
+  const asked = runsCalls();
+  click(v, cx, "gh-page-prev");
+  assert.equal(pager(v), "Page 1 of 3");
+  assert.ok(byId(v.render(), "gh-run-500"));
+  await cx.settle();
+  assert.equal(runsCalls(), asked);
+});
+
+test("↻ asks GitHub again even when the page is fresh", async () => {
+  const { v, cx } = await actions();
+  const asked = runsCalls();
+  click(v, cx, "gh-refresh");
+  await cx.settle();
+  assert.equal(runsCalls(), asked + 1);
+});
+
+test("a slow answer for the workflow left behind doesn't replace one shown from the cache", async () => {
+  const { v, cx } = await actions();
+  click(v, cx, "gh-nav-2");
+  await cx.settle();
+  age(`runs|${REPO}|*|1`, 2 * 60 * 1000); // so going to All asks GitHub (slowly)
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const answer = host.exec;
+  host.exec = async (cmd, args, opts) => {
+    if (String(args[1]).includes("/actions/runs?")) await held;
+    return answer(cmd, args, opts);
+  };
+  click(v, cx, "gh-nav-*");
+  click(v, cx, "gh-nav-2"); // fresh in the cache
+  release();
+  await cx.settle();
+  assert.deepEqual(runIds(v), [11], "Deploy's runs, not All's");
+  assert.equal(byId(v.render(), "gh-nav-2").props.bg, host.theme.selected);
+});
+
+test("the cache outlives the panel: opened again, Actions shows at once and the workflow list isn't asked for", async () => {
+  await actions();
+  const workflowsAsked = ran("api repos/").filter((a) => a[1].includes("/workflows?")).length;
+  const asked = runsCalls();
+  const { v } = await actions();
+  assert.deepEqual(navIds(v), ["gh-nav-*", "gh-nav-1", "gh-nav-2", "gh-nav-3"]);
+  assert.deepEqual(runIds(v).slice(0, 1), [11]);
+  assert.equal(ran("api repos/").filter((a) => a[1].includes("/workflows?")).length, workflowsAsked);
+  assert.equal(runsCalls(), asked);
+});
+
+// ---- more of the cache: open PRs per repo, your login, closed pages, details
+const prListCalls = () => ran("pr list").length;
+const userCalls = () => ran("api user").length;
+const closedCalls = () => ran("api graphql").length;
+
+test("switching back to a repo seen a moment ago shows its open PRs at once, without asking", async () => {
+  host.spaces.push({ id: "s4", name: "site", folder: "/w/site", machine: null, branch: "main", tabs: [] });
+  const { v, cx } = await mount();
+  // Only the 1-second check for a space switch (cx.tick would run the poll too, which always asks).
+  const go = async (i) => {
+    host.spaces.forEach((s, n) => { s.active = n === i; });
+    cx.timers.find((t) => t.every && t.ms === 1000).fn(cx);
+    await cx.settle();
+  };
+  await go(3);
+  await cx.settle();
+  const asked = prListCalls();
+  await go(0);
+  assert.deepEqual(prIds(v), [1, 2, 3], "basecamp's PRs, straight away");
+  await cx.settle();
+  assert.equal(prListCalls(), asked);
+});
+
+test("open PRs cached over a minute ago show at once, then refresh; the poll always asks", async () => {
+  const first = await mount();
+  host.shared["github.cache"][`open|${REPO}`].at -= 2 * 60 * 1000;
+  gh.open = [pr(50, "Newer PR")];
+  const asked = prListCalls();
+  const { v, cx } = await mount();
+  assert.equal(prListCalls(), asked + 1);
+  assert.deepEqual(prIds(v), [50]);
+  await cx.tick(); // the poll
+  await cx.settle();
+  assert.equal(prListCalls(), asked + 2);
+  assert.ok(first);
+});
+
+test("a PR list from the cache isn't news: no toasts on opening the panel", async () => {
+  gh.open = [pr(1, "Mine", { author: { login: "me" } })];
+  await mount();
+  host.shared["github.cache"][`open|${REPO}`].at -= 2 * 60 * 1000;
+  gh.open = [pr(1, "Mine", { author: { login: "me" }, statusCheckRollup: [check("FAILURE")] })];
+  await mount();
+  assert.deepEqual(host.notices, []);
+});
+
+test("your GitHub login is asked once a day, not every time the panel opens", async () => {
+  await mount();
+  host.shared["github.cache"][`open|${REPO}`].at -= 2 * 60 * 1000; // so the PRs are fetched again, login and all
+  const asked = prListCalls();
+  await mount();
+  assert.equal(prListCalls(), asked + 1);
+  assert.equal(userCalls(), 1);
+});
+
+test("reopened on Closed, a stale page 2 is fetched from page 1's cached cursor", async () => {
+  gh.closed = many(60);
+  const first = await mount();
+  click(first.v, first.cx, "gh-closed");
+  await first.cx.settle();
+  click(first.v, first.cx, "gh-page-next");
+  await first.cx.settle();
+  const page2 = Object.keys(host.shared["github.cache"]).find((k) => k.startsWith("closed|") && k.endsWith("|1"));
+  host.shared["github.cache"][page2].at -= 2 * 60 * 1000;
+  const { v, cx } = await mount(); // Closed is remembered; page 1 comes from the cache
+  click(v, cx, "gh-page-next");
+  await cx.settle();
+  assert.equal(searches().at(-1).after, "c25");
+  assert.deepEqual(prIds(v).slice(0, 1), [975]);
+});
+
+test("going back a page of closed PRs, or back to Closed, shows it at once", async () => {
+  gh.closed = many(60);
+  const { v, cx } = await mount();
+  click(v, cx, "gh-closed");
+  await cx.settle();
+  click(v, cx, "gh-page-next");
+  await cx.settle();
+  const asked = closedCalls();
+  click(v, cx, "gh-page-prev");
+  assert.deepEqual(prIds(v).slice(0, 1), [1000]);
+  click(v, cx, "gh-page-next");
+  assert.deepEqual(prIds(v).slice(0, 1), [975], "page 2 too, cursor and all");
+  click(v, cx, "gh-open");
+  click(v, cx, "gh-closed");
+  await cx.settle();
+  assert.equal(closedCalls(), asked);
+  assert.equal(pager(v), "Page 2 of 3");
+});
+
+test("a new closed-PR search isn't served from another search's cache", async () => {
+  gh.closed = [...many(3), pr(1, "Mine, closed", { state: "CLOSED", author: { login: "me" } })];
+  const { v, cx } = await mount();
+  click(v, cx, "gh-closed");
+  await cx.settle();
+  click(v, cx, "gh-mine");
+  await cx.settle();
+  assert.deepEqual(prIds(v), [1]);
+  click(v, cx, "gh-all");
+  await cx.settle();
+  assert.equal(prIds(v).length, 4);
+});
+
+test("a PR's detail seen a moment ago shows at once without asking; ↻ asks again", async () => {
+  gh.view = view();
+  await detail({ repo: REPO, kind: "pr", id: 1 });
+  const asked = ran("pr view").length;
+  const { v, cx } = await detail({ repo: REPO, kind: "pr", id: 1 });
+  assert.match(text(v.render()), /Fix login redirect/);
+  assert.equal(ran("pr view").length, asked);
+  click(v, cx, "ghd-reload");
+  await cx.settle();
+  assert.equal(ran("pr view").length, asked + 1);
+});
+
+test("a run still going is always asked again; a finished one comes from the cache", async () => {
+  gh.run = runView({ status: "in_progress", conclusion: "" });
+  await detail({ repo: REPO, kind: "run", id: 12 });
+  await detail({ repo: REPO, kind: "run", id: 12 });
+  assert.equal(ran("run view 12").length, 2);
+  gh.run = runView();
+  await detail({ repo: REPO, kind: "run", id: 12 });
+  await detail({ repo: REPO, kind: "run", id: 12 });
+  assert.equal(ran("run view 12").length, 3);
+});
+
+test("the cached PR list is slim: each PR's checks summed up, not every check", async () => {
+  gh.open = [pr(1, "Many checks", { statusCheckRollup: Array.from({ length: 40 }, () => check("SUCCESS")).concat([check("FAILURE")]) })];
+  await mount();
+  const [cachedPr] = host.shared["github.cache"][`open|${REPO}`].data;
+  assert.equal(cachedPr.statusCheckRollup, undefined);
+  assert.equal(cachedPr.checks, "failure");
+  const { v } = await mount(); // drawn from the cache
+  const icons = all(byId(v.render(), "gh-pr-1"), (e) => e.kind === "svg").map((e) => e.arg);
+  assert.ok(icons.includes("mods/github/check-failure.svg"));
+});
+
+test("details stay out of shared.json (they're big): kept in memory", async () => {
+  gh.view = view();
+  await detail({ repo: REPO, kind: "pr", id: 1 });
+  assert.equal(host.shared["github.details"], undefined);
+  assert.ok(details.get(`pr|${REPO}|1`));
 });

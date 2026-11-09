@@ -11,9 +11,9 @@ changes show up as soon as the files are saved.
 | `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, GitHub, Linear), with one Spaces list that shows each space's agents |
 | `mods/spaces-agents/` | That sidebar list: a copy of Herdr's Spaces list with each space's agents (status, time in that state) listed under it; replaces the separate Agents list |
 | `mods/tabs-linear/` | The tab bar for that layout, with buttons that open the panel |
-| `mods/linear-issues/` | The Linear panel: issues assigned to you, grouped by project or state, matched to Herdr spaces by branch, plus an issue detail view |
+| `mods/linear-issues/` | The Linear panel: issues assigned to you, with a search, by project (a resizable side nav of projects) or by state, matched to Herdr spaces by branch, plus an issue detail view |
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
-| `mods/github/` | The GitHub panel for the active space's repo (through `gh`): open pull requests (All / Mine / Review requested, search), closed ones 25 a page (All / Mine / Reviewed by me and the search run on GitHub, so they cover every page), Actions runs 30 a page grouped by workflow, and a detail view (a PR's reviews, checks, files, description and comments; a run's jobs, steps and failed log, with re-run and cancel). PRs link to their space or offer a worktree, and to their Linear issue. Toasts when CI fails on your PR, it gets a review, or your review is requested |
+| `mods/github/` | The GitHub panel for the active space's repo (through `gh`): open pull requests (All / Mine / Review requested, search), closed ones 25 a page (All / Mine / Reviewed by me and the search run on GitHub, so they cover every page), Actions runs 30 a page with a resizable side nav of workflows, and a detail view (a PR's reviews, checks, files, description and comments; a run's jobs, steps and failed log, with re-run and cancel). PRs link to their space or offer a worktree, and to their Linear issue. Toasts when CI fails on your PR, it gets a review, or your review is requested |
 | `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text; follows light/dark themes. The board is `data/sketch/board.json`, which agents can edit (format in `mods/Sketch/FORMAT.md`) |
 | `keys.json` | Key bindings, including the ones below |
 | `tests/`, `package.json` | Unit and integration tests for the mods (`npm test`); how to write them is in `tests/AGENTS.md` |
@@ -77,6 +77,10 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
   of `mods/linear-issues/common.js`. Change both together.
 - The two Linear mods share a cache in `shared.json` (`linear.mine`,
   `linear.workflowStates`), which isn't committed.
+- The GitHub panel caches in `shared.json` too (`github.cache`: open PRs,
+  closed and Actions pages, workflows, your login; at most 40 entries). A page
+  under a minute old shows without asking GitHub; the poll and ↻ always ask.
+  PR, run and Linear issue details are cached in memory only (they're big).
 - The GitHub panel follows the active space: its folder's `origin` picks the
   repo. A space whose folder isn't a GitHub checkout shows a note instead.
   Alerts only cover the repo the panel is showing.

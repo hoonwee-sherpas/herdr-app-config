@@ -8,11 +8,12 @@
 // the issue's branch from the basecamp checkout.
 
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, InputState } from "gpui-base";
 import { run, spaces, agents, layout, shared, setShared, theme, openOverlay, closeOverlay, props, home, nextCommand } from "herdr";
 import { gql, errorText, DETAIL_KEY, startedSteps, stateIcon, spacesFor, openUrl, iconButton,
   MINE_KEY, STATES_KEY, STATE_FIELDS, ISSUE_FIELDS, fresh, statePicker, teamStates, setIssueState, shareState } from "./common.js";
 import { Detail } from "./detail.js";
+import { searchBar, sideNav, navState } from "./sidenav.js";
 
 const POLL_MS = 3 * 60 * 1000;
 const REPO = () => `${home()}/Sherpas/basecamp`;
@@ -56,6 +57,12 @@ export default class LinearIssues extends View {
     this.mode = load("mode", "project");
     this.backlog = load("backlog", false);
     this.folded = new Set(load("folded", []));
+    // By project: the project picked in the side nav ("*": all of them).
+    this.project = load("project", "*");
+    this.nav = navState(load("navWidth", 150));
+    this.term = "";
+    this.search = InputState.new({ placeholder: "Search issues (title or PRD-1234)" });
+    this.search.on("change", (_e, cx) => { this.term = this.search.value(); cx.notify(); });
     this.lastCommand = null;
     // The issue whose status menu is open, and why the last status change failed.
     this.picking = null;
@@ -159,8 +166,11 @@ export default class LinearIssues extends View {
     if (states?.nodes) this.steps = startedSteps(states.nodes);
   }
 
+  // The issues shown: Backlog only when asked, and only those the search matches.
   shown() {
-    return this.backlog ? this.issues : this.issues.filter((i) => i.state.type !== "backlog");
+    const q = this.term.trim().toLowerCase();
+    return this.issues.filter((i) => this.backlog || i.state.type !== "backlog")
+      .filter((i) => !q || i.identifier.toLowerCase().includes(q) || i.title.toLowerCase().includes(q));
   }
 
   // [{ key, name, items }]: by workflow state, or by project with each project's
@@ -240,13 +250,13 @@ export default class LinearIssues extends View {
   }
 
 
-  row(t, issue, all, nested) {
+  row(t, issue, all) {
     const matched = spacesFor(issue.identifier, all);
     const list = this.agentsFor(matched);
     const top = list[0]?.status ?? null;
     // A gutter mark on the row's edge: the agent's status color, faint for a space alone.
     const gutter = !matched.length ? "#00000000" : top && top !== "idle" ? t[top] ?? t.dim : t.border;
-    return h_flex().id(`li-${issue.identifier}`).w_full().h(30).flex_none().pl(nested ? 16 : 2).pr(8).gap(7).items_center()
+    return h_flex().id(`li-${issue.identifier}`).w_full().h(30).flex_none().pl(2).pr(8).gap(7).items_center()
       .rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
       .when(shared(DETAIL_KEY) === issue.identifier, (el) => el.bg(t.selected))
       .on_click(() => this.showDetail(issue))
@@ -311,21 +321,50 @@ export default class LinearIssues extends View {
       .when(Boolean(this.stateError), (el) => el.child(h_flex().px(14).py(6).gap(8).items_center().text_size(12).text_color(t.ansi1)
         .child(div().flex_1().min_w(0).child(this.stateError))
         .child(iconButton(t, "li-state-error-close", "✕", (cx) => { this.stateError = null; cx.notify(); }))))
-      .child(v_flex().id("li-list").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(2)
-        .when(!this.loading && !this.error && this.issues.length === 0, (el) =>
-          el.child(div().p(10).text_color(t.dim).child("No open issues assigned to you.")))
-        .children(groups.flatMap((g) => {
-          const folded = this.folded.has(g.key);
-          const nested = this.mode === "project";
-          const head = h_flex().id(`lg-${g.key}`).h(28).flex_none().px(8).gap(7).items_center().rounded(6)
-            .cursor_pointer().hover((s) => s.bg(t.hover)).text_size(nested ? 12 : 11).font_semibold()
-            .text_color(nested ? t.foreground : t.muted)
-            .on_click((_e, cx) => this.toggle(g.key, cx))
-            .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
-            .child(div().flex_1().min_w(0).truncate().child(g.name))
-            .child(this.summary(t, g, all))
-            .child(div().flex_none().text_size(10).font_normal().text_color(t.dim).child(String(g.items.length)));
-          return folded ? [head] : [head, ...g.items.map((i) => this.row(t, i, all, nested))];
-        })));
+      .child(searchBar(t, this.search))
+      .child(this.mode === "project" ? this.byProject(t, all, groups) : this.list(t, all, groups));
+  }
+
+  empty(t) {
+    return div().p(10).text_color(t.dim).child(this.term.trim() ? "Nothing matches." : "No open issues assigned to you.");
+  }
+
+  // By state: a group per state, each folding.
+  list(t, all, groups) {
+    return v_flex().id("li-list").flex_1().min_h(0).overflow_y_scrollbar().p(6).gap(2)
+      .when(!this.loading && !this.error && groups.length === 0, (el) => el.child(this.empty(t)))
+      .children(groups.flatMap((g) => {
+        const folded = this.folded.has(g.key);
+        const head = h_flex().id(`lg-${g.key}`).h(28).flex_none().px(8).gap(7).items_center().rounded(6)
+          .cursor_pointer().hover((s) => s.bg(t.hover)).text_size(11).font_semibold().text_color(t.muted)
+          .on_click((_e, cx) => this.toggle(g.key, cx))
+          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none().text_color(t.dim))
+          .child(div().flex_1().min_w(0).truncate().child(g.name))
+          .child(this.summary(t, g, all))
+          .child(div().flex_none().text_size(10).font_normal().text_color(t.dim).child(String(g.items.length)));
+        return folded ? [head] : [head, ...g.items.map((i) => this.row(t, i, all))];
+      }));
+  }
+
+  // By project: a side nav (All, then each project) beside the picked one's
+  // issues. All shows every issue under its project's name.
+  byProject(t, all, groups) {
+    const picked = groups.some((g) => g.name === this.project) ? this.project : "*";
+    const show = picked === "*" ? groups : groups.filter((g) => g.name === picked);
+    const body = v_flex().id("li-list").size_full().min_h(0).overflow_y_scrollbar().p(6).gap(2)
+      .when(!this.loading && !this.error && show.length === 0, (el) => el.child(this.empty(t)))
+      .children(show.flatMap((g) => [
+        ...(picked === "*" ? [h_flex().id(`li-sub-${g.name}`).h(26).flex_none().px(8).gap(7).items_center()
+          .text_size(11).font_semibold().text_color(t.muted)
+          .child(div().flex_1().min_w(0).truncate().child(g.name))
+          .child(this.summary(t, g, all))
+          .child(div().flex_none().text_size(10).font_normal().text_color(t.dim).child(String(g.items.length)))] : []),
+        ...g.items.map((i) => this.row(t, i, all)),
+      ]));
+    return sideNav(t, {
+      id: "li-nav", picked, body, state: this.nav, onResized: (w) => save("navWidth", w),
+      entries: [{ key: "*", label: "All", count: this.shown().length }, ...groups.map((g) => ({ key: g.name, label: g.name, count: g.items.length }))],
+      onPick: (key) => { this.project = key; save("project", key); },
+    });
   }
 }

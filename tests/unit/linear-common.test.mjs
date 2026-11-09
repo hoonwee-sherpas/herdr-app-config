@@ -112,3 +112,8 @@ test("stateIcon has an icon file for every workflow state type", () => {
     assert.ok(existsSync(home + icon.arg), `${type}: ${icon.arg}`);
   }
 });
+
+test("github's copy of sidenav.js matches linear-issues' (mods can't import each other)", () => {
+  const body = (p) => readFileSync(new URL(p, import.meta.url), "utf8").replace(/^\/\/ Copied from.*\n/, "");
+  assert.equal(body("../../mods/github/sidenav.js"), body("../../mods/linear-issues/sidenav.js"));
+});

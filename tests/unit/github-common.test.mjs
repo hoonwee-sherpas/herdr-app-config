@@ -2,8 +2,9 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { host } from "herdr";
 import {
-  parseRemote, checkState, prState, runState, groupRuns, linearIds, cleanBody, ago, took,
+  parseRemote, checkState, prState, runState, linearIds, cleanBody, ago, took,
   spacesForBranch, filterPrs, alerts, gh, repoOf, PAGE, pageCount, closedQuery, fromRestRun,
+  CACHE_KEY, CACHE_MAX, cached, remember, fresh,
 } from "../../mods/github/common.js";
 
 beforeEach(() => host.reset());
@@ -47,13 +48,6 @@ test("runState reads gh's lower-case status and conclusion", () => {
   assert.equal(runState({ status: "in_progress", conclusion: "" }), "running");
   assert.equal(runState({ status: "queued", conclusion: "" }), "queued");
   assert.equal(runState({ status: "waiting", conclusion: "" }), "queued");
-});
-
-test("groupRuns groups by workflow, the most recently active workflow first, newest run first", () => {
-  const r = (id, workflowName, createdAt) => ({ databaseId: id, workflowName, createdAt });
-  const groups = groupRuns([r(1, "CI", "2026-11-06T01:00:00Z"), r(2, "Deploy", "2026-11-06T03:00:00Z"), r(3, "CI", "2026-11-06T02:00:00Z")]);
-  assert.deepEqual(groups.map((g) => [g.name, g.runs.map((x) => x.databaseId)]), [["Deploy", [2]], ["CI", [3, 1]]]);
-  assert.deepEqual(groupRuns([]), []);
 });
 
 test("linearIds finds the team's issue ids in a branch or title, once each, upper case", () => {
@@ -175,4 +169,39 @@ test("fromRestRun reads the REST API's run like gh run list's", () => {
   assert.deepEqual(r, { databaseId: 42, number: 7, workflowName: "(CI) Lint", displayTitle: "Fix", status: "completed", conclusion: "failure",
     headBranch: "feature/prd-1", event: "pull_request", createdAt: "2026-11-06T01:00:00Z", startedAt: "2026-11-06T01:00:05Z",
     updatedAt: "2026-11-06T01:02:00Z", url: "https://github.com/a/b/actions/runs/42" });
+});
+
+test("remember keeps answers in the shared cache, and cached reads them back with their time", () => {
+  remember("runs|a/b|*|1", { runs: [1], total: 1 });
+  const hit = cached("runs|a/b|*|1");
+  assert.deepEqual(hit.data, { runs: [1], total: 1 });
+  assert.ok(Date.now() - hit.at < 1000);
+  assert.ok(host.shared[CACHE_KEY], "in herdr's shared store, so it outlives a restart");
+  assert.equal(cached("runs|a/b|*|2"), null);
+});
+
+test("fresh: an entry younger than the limit", () => {
+  assert.equal(fresh({ at: Date.now() - 1000 }, 60000), true);
+  assert.equal(fresh({ at: Date.now() - 61000 }, 60000), false);
+  assert.equal(fresh(null, 60000), false);
+});
+
+test("the cache keeps only the most recently stored entries", () => {
+  for (let i = 0; i < CACHE_MAX + 5; i++) {
+    host.shared[CACHE_KEY] = { ...(host.shared[CACHE_KEY] ?? {}) };
+    remember(`k${i}`, i);
+    host.shared[CACHE_KEY][`k${i}`].at = 1000 + i; // stored in this order
+  }
+  const keys = Object.keys(host.shared[CACHE_KEY]);
+  assert.equal(keys.length, CACHE_MAX);
+  assert.equal(cached("k0"), null, "the oldest went first");
+  assert.ok(cached(`k${CACHE_MAX + 4}`));
+});
+
+test("remember and cached can use another store with its own size", () => {
+  for (let i = 0; i < 4; i++) { remember(`d${i}`, i, "github.details", 3); host.shared["github.details"][`d${i}`].at = 1000 + i; }
+  assert.equal(Object.keys(host.shared["github.details"]).length, 3);
+  assert.equal(cached("d0", "github.details"), null);
+  assert.equal(cached("d3", "github.details").data, 3);
+  assert.equal(cached("d3"), null, "separate from the main cache");
 });

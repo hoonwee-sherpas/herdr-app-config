@@ -8,6 +8,18 @@ import { run, spaces, shared, setShared, theme, openOverlay, home } from "herdr"
 import { gql, errorText, DETAIL_KEY, MINE_KEY, STATE_FIELDS, startedSteps, stateIcon, spacesFor, openUrl, iconButton,
   statePicker, teamStates, setIssueState, shareState } from "./common.js";
 
+// Issues shown here, kept so going back to one shows it at once: identifier →
+// { at, data }, the newest DETAILS_MAX. In memory, not shared.json: with
+// descriptions and comments they're big; they last until the app restarts.
+export const details = new Map();
+const DETAILS_MAX = 20, DETAILS_TTL = 60 * 1000;
+const cachedIssue = (id) => details.get(id) ?? null;
+function keep(issue) {
+  details.delete(issue.identifier);
+  details.set(issue.identifier, { at: Date.now(), data: issue });
+  while (details.size > DETAILS_MAX) details.delete(details.keys().next().value);
+}
+
 const STATE = "state { id name type position color }";
 const QUERY = `query($id: String!) { issue(id: $id) {
   identifier title url branchName priorityLabel createdAt updatedAt description
@@ -64,6 +76,7 @@ export class Detail {
         const now = await setIssueState(issue, state);
         if (this.issue?.identifier === issue.identifier) this.issue = { ...this.issue, state: now };
         shareState(issue.identifier, now);
+        if (cachedIssue(issue.identifier)) keep({ ...cachedIssue(issue.identifier).data, state: now });
         this.knownAt = shared(MINE_KEY)?.at ?? Date.now();
       } catch (e) {
         if (this.issue?.identifier === issue.identifier) this.issue = { ...this.issue, state: before };
@@ -81,25 +94,37 @@ export class Detail {
       onPick: (s, cx) => this.pickState(s, cx) });
   }
 
-  load(id, cx) {
+  // Shows an issue: from the cache at once when it's there; asked from Linear
+  // when it isn't, is over a minute old, or `force` (↻).
+  load(id, cx, force = false) {
+    const hit = cachedIssue(id);
+    if (id !== this.id && hit) this.adopt(hit.data, hit.at);
+    else if (id !== this.id) this.issue = null;
     this.id = id;
-    this.loading = true;
     this.error = null;
+    if (!force && hit && Date.now() - hit.at < DETAILS_TTL) { this.loading = false; cx.notify(); return; }
+    this.loading = true;
     cx.notify();
     cx.spawn(async (cx) => {
       try {
         const d = await gql(QUERY, { id });
+        keep(d.issue);
         if (this.id !== id) return; // another issue was picked meanwhile
-        this.issue = d.issue;
-        this.steps = startedSteps(d.issue.team.states.nodes);
-        this.states = teamStates(d.issue.team.states.nodes, d.issue.team.key);
-        this.knownAt = Date.now();
+        this.adopt(d.issue, Date.now());
       } catch (e) {
         if (this.id === id) this.error = errorText(e);
       } finally {
         if (this.id === id) { this.loading = false; cx.notify(); }
       }
     });
+  }
+
+  // Shows an issue (fetched now, or cached at `at`).
+  adopt(issue, at) {
+    this.issue = issue;
+    this.steps = startedSteps(issue.team.states.nodes);
+    this.states = teamStates(issue.team.states.nodes, issue.team.key);
+    this.knownAt = at;
   }
 
   field(t, label, value) {
@@ -146,7 +171,7 @@ export class Detail {
           openOverlay({ mod: "worktree", kind: "dialog", width: 440, height: 260,
             props: { folder: `${home()}/Sherpas/basecamp`, action: "new", branch: i.branchName } }))))
         .child(iconButton(t, "ld-web", "Open in Linear ↗", () => openUrl(i.url)))
-        .child(iconButton(t, "ld-reload", "↻", (cx) => this.load(i.identifier, cx)))
+        .child(iconButton(t, "ld-reload", "↻", (cx) => this.load(i.identifier, cx, true)))
         .child(iconButton(t, "ld-close", "✕", () => this.onClose())))
       .when(Boolean(this.error), (el) => el.child(div().px(14).py(6).text_size(12).text_color(t.ansi1).child(this.error)))
       .child(v_flex().id("ld-body").flex_1().min_h(0).overflow_y_scrollbar().px(18).py(14).gap(16)

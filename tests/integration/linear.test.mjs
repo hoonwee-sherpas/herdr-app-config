@@ -3,11 +3,12 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { host } from "herdr";
-import { makeCx, key } from "../fakes/cx.mjs";
-import { byId, text } from "../fakes/element.mjs";
+import { makeCx, key, mouse } from "../fakes/cx.mjs";
+import { byId, all, text } from "../fakes/element.mjs";
 import LinearSearch from "../../mods/linear-search/main.js";
 import LinearIssues from "../../mods/linear-issues/main.js";
 import { MINE_KEY, STATES_KEY, DETAIL_KEY } from "../../mods/linear-issues/common.js";
+import { details } from "../../mods/linear-issues/detail.js";
 
 const issue = (n, title, type = "started", extra = {}) => ({
   identifier: `PRD-${n}`, title, url: `https://linear.app/i/PRD-${n}`, branchName: `feature/prd-${n}`, priority: 2,
@@ -20,6 +21,7 @@ let api; // query text -> data
 beforeEach(() => {
   host.reset();
   localStorage.clear();
+  details.clear();
   api = [];
   host.exec = async (cmd, args) => {
     if (cmd !== "sh") return { code: 0, stdout: "", stderr: "" };
@@ -259,4 +261,160 @@ test("detail: a status changed in the list shows in the open detail", async () =
   host.shared[MINE_KEY] = { at: Date.now(), issues: [{ ...todoIssue(), state: DOING }] };
   await cx.tick();
   assert.match(text(byId(v.render(), "ld-state").props.trigger), /Doing/);
+});
+
+// ---- by project: a side nav (All, then each project) beside the picked one's issues, a search on top
+const inProject = (n, project, title = `Issue ${n}`) => issue(n, title, "started", { project: project ? { name: project } : null });
+const navIds = (root) => all(root, (e) => /^li-nav-/.test(String(e.props.id))).map((e) => e.props.id);
+const rowIds = (root) => all(root, (e) => /^li-PRD-\d+$/.test(String(e.props.id))).map((e) => e.props.id.slice(3));
+function mine(...issues) {
+  host.shared[MINE_KEY] = { at: Date.now(), issues };
+  host.shared[STATES_KEY] = { at: Date.now(), nodes: [] };
+}
+
+test("panel: by project, a side nav lists All and each project with its count", async () => {
+  mine(inProject(1, "상시"), inProject(2, "Agent"), inProject(3, "상시"), inProject(4, null));
+  const { v } = await mount(LinearIssues);
+  const root = v.render();
+  assert.deepEqual(navIds(root), ["li-nav-*", "li-nav-상시", "li-nav-Agent", "li-nav-No project"]);
+  assert.match(text(byId(root, "li-nav-*")), /All\s*4/);
+  assert.match(text(byId(root, "li-nav-상시")), /상시\s*2/);
+  assert.equal(byId(root, "li-nav-*").props.bg, host.theme.selected, "All is picked at first");
+  assert.deepEqual(rowIds(root), ["PRD-1", "PRD-3", "PRD-2", "PRD-4"], "All: every issue, by project");
+});
+
+test("panel: picking a project shows only its issues, and is remembered", async () => {
+  mine(inProject(1, "상시"), inProject(2, "Agent"), inProject(3, "상시"));
+  const first = await mount(LinearIssues);
+  byId(first.v.render(), "li-nav-Agent").handlers.on_click({}, first.cx);
+  assert.deepEqual(rowIds(first.v.render()), ["PRD-2"]);
+  const { v } = await mount(LinearIssues);
+  assert.deepEqual(rowIds(v.render()), ["PRD-2"]);
+  assert.equal(byId(v.render(), "li-nav-Agent").props.bg, host.theme.selected);
+});
+
+test("panel: a remembered project that's gone falls back to All", async () => {
+  localStorage.setItem("project", JSON.stringify("Old project"));
+  mine(inProject(1, "상시"));
+  const { v } = await mount(LinearIssues);
+  assert.deepEqual(rowIds(v.render()), ["PRD-1"]);
+  assert.equal(byId(v.render(), "li-nav-*").props.bg, host.theme.selected);
+});
+
+test("panel: the search on top narrows the issues and the nav's projects", async () => {
+  mine(inProject(1, "상시", "로그인 수정"), inProject(2, "Agent", "Installer"), inProject(3, "상시", "Docs"));
+  const { v, cx } = await mount(LinearIssues);
+  v.search.type("로그인", cx);
+  let root = v.render();
+  assert.deepEqual(rowIds(root), ["PRD-1"]);
+  assert.deepEqual(navIds(root), ["li-nav-*", "li-nav-상시"], "projects with no match drop out");
+  assert.match(text(byId(root, "li-nav-*")), /All\s*1/);
+  v.search.type("prd-2", cx);
+  assert.deepEqual(rowIds(v.render()), ["PRD-2"], "identifiers match too");
+  byId(v.render(), "li-nav-Agent").handlers.on_click({}, cx);
+  v.search.type("zzz", cx);
+  assert.match(text(v.render()), /Nothing matches/);
+});
+
+test("panel: by state there's no side nav, and the search still works", async () => {
+  mine(inProject(1, "상시", "로그인 수정"), inProject(2, "Agent", "Installer"));
+  const { v, cx } = await mount(LinearIssues);
+  byId(v.render(), "li-by-state").handlers.on_click({}, cx);
+  assert.deepEqual(navIds(v.render()), []);
+  v.search.type("install", cx);
+  assert.deepEqual(rowIds(v.render()), ["PRD-2"]);
+});
+
+// ---- the side nav is resizable: drag its edge; the width is remembered
+const navWidth = (v) => byId(v.render(), "li-nav").props.w;
+const pane = (v) => byId(v.render(), "li-nav/pane");
+function dragEdge(v, cx, from, to) {
+  byId(v.render(), "li-nav/resize").handlers["on_mouse_down:left"](mouse(from, 100), cx);
+  pane(v).handlers.on_mouse_move(mouse(to, 100), cx);
+  pane(v).handlers["on_mouse_up:left"](mouse(to, 100), cx);
+}
+
+test("panel: dragging the nav's edge resizes it, and the width is remembered", async () => {
+  mine(inProject(1, "상시"));
+  const first = await mount(LinearIssues);
+  const start = navWidth(first.v);
+  dragEdge(first.v, first.cx, 300, 360);
+  assert.equal(navWidth(first.v), start + 60);
+  const { v } = await mount(LinearIssues);
+  assert.equal(navWidth(v), start + 60);
+});
+
+test("panel: with herdr zoomed (1.1), the edge follows the pointer", async () => {
+  host.settings.zoom = 1.1;
+  mine(inProject(1, "상시"));
+  const { v, cx } = await mount(LinearIssues);
+  const start = navWidth(v);
+  dragEdge(v, cx, 330, 396); // 66 screen points = 60 px
+  assert.equal(navWidth(v), start + 60);
+});
+
+test("panel: the nav keeps between 100 and 360 px wide", async () => {
+  mine(inProject(1, "상시"));
+  const { v, cx } = await mount(LinearIssues);
+  dragEdge(v, cx, 300, -500);
+  assert.equal(navWidth(v), 100);
+  dragEdge(v, cx, 300, 2000);
+  assert.equal(navWidth(v), 360);
+});
+
+test("panel: after the button's let go, moving doesn't resize; a lost release ends at the next press", async () => {
+  mine(inProject(1, "상시"));
+  const { v, cx } = await mount(LinearIssues);
+  dragEdge(v, cx, 300, 340);
+  const w = navWidth(v);
+  pane(v).handlers.on_mouse_move(mouse(500, 100), cx);
+  assert.equal(navWidth(v), w);
+  // Released outside the panel: no up arrives. The next press anywhere ends it.
+  byId(v.render(), "li-nav/resize").handlers["on_mouse_down:left"](mouse(300, 100), cx);
+  pane(v).handlers.on_mouse_move(mouse(320, 100), cx);
+  pane(v).handlers["on_mouse_down:left"](mouse(320, 100), cx);
+  pane(v).handlers.on_mouse_move(mouse(600, 100), cx);
+  assert.equal(navWidth(v), w + 20);
+});
+
+// ---- the detail's cache: an issue seen in the last minute shows without asking Linear
+const detailAsks = () => host.execs.filter(([, args]) => String(args?.[3] ?? "").includes("issue(id:")).length;
+
+test("detail: an issue seen a moment ago shows at once, without asking Linear", async () => {
+  mine(todoIssue());
+  await mountDetail();
+  const asked = detailAsks();
+  const { v } = await mountDetail();
+  assert.match(text(v.render()), /Write the docs/);
+  assert.equal(detailAsks(), asked);
+});
+
+test("detail: one seen over a minute ago shows at once, then is asked again", async () => {
+  mine(todoIssue());
+  await mountDetail();
+  details.get("PRD-7").at -= 2 * 60 * 1000;
+  const asked = detailAsks();
+  const { v } = await mountDetail({ title: "Write the docs (renamed)" });
+  assert.equal(detailAsks(), asked + 1);
+  assert.match(text(v.render()), /renamed/);
+});
+
+test("detail: ↻ asks Linear again", async () => {
+  mine(todoIssue());
+  const { v, cx } = await mountDetail();
+  const asked = detailAsks();
+  byId(v.render(), "ld-reload").handlers.on_click({}, cx);
+  await cx.settle();
+  assert.equal(detailAsks(), asked + 1);
+});
+
+test("detail: a status picked there is in the cached copy too", async () => {
+  mine(todoIssue());
+  linearMoves();
+  const { v, cx } = await mountDetail();
+  byId(v.render(), "ld-state").handlers.on_open_change(true, cx);
+  byId(v.render(), "ld-state-opt-ws-Done").handlers.on_click({}, cx);
+  await cx.settle();
+  assert.equal(details.get("PRD-7").data.state.name, "Done");
+  assert.equal(host.shared["linear.details"], undefined, "in memory, not shared.json");
 });

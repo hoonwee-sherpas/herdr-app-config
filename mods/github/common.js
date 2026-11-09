@@ -74,6 +74,47 @@ export const fromRestRun = (r) => ({
   startedAt: r.run_started_at, updatedAt: r.updated_at, url: r.html_url,
 });
 
+// ---- cache
+
+// Answers from GitHub, kept in herdr's shared store (shared.json, so they
+// outlive a restart) like the Linear mods' cache: { [key]: { at, data } }.
+// Keys: "runs|<repo>|<workflow id or *>|<page>", "workflows|<repo>",
+// "open|<repo>" (slim: see slimPr), "closed|<repo>|<search>|<page>", "me".
+export const CACHE_KEY = "github.cache";
+export const CACHE_MAX = 40; // entries (a runs page is ~9 KB in shared.json); the oldest go first
+export const RUNS_TTL = 60 * 1000;
+export const WORKFLOWS_TTL = 24 * 60 * 60 * 1000;
+export const PRS_TTL = 60 * 1000;     // open PRs, closed pages, details
+export const ME_TTL = 24 * 60 * 60 * 1000;
+export const DETAILS_MAX = 20;
+
+// Details (a PR's files, checks and comments; a run's jobs) are tens of KB
+// each, too big for shared.json, so they're kept in memory: going back to one
+// is instant until the app restarts. "pr|<repo>|<n>", "run|<repo>|<id>" → { at, data }.
+export const details = new Map();
+export function keepDetail(key, data) {
+  details.delete(key);
+  details.set(key, { at: Date.now(), data });
+  while (details.size > DETAILS_MAX) details.delete(details.keys().next().value);
+}
+
+/** An open PR as the list needs it: its checks summed up (checks) instead of
+ *  every check, and no reviews. A hundred PRs' checks are hundreds of KB. */
+export function slimPr({ statusCheckRollup, latestReviews, ...rest }) {
+  return { ...rest, checks: checkState(statusCheckRollup) };
+}
+
+export const cached = (key, store = CACHE_KEY) => shared(store)?.[key] ?? null;
+export const fresh = (entry, ms) => Boolean(entry?.at && Date.now() - entry.at < ms);
+
+/** Keeps `data` under `key` in a store, dropping the oldest past `max` entries. */
+export function remember(key, data, store = CACHE_KEY, max = CACHE_MAX) {
+  const all = { ...(shared(store) ?? {}), [key]: { at: Date.now(), data } };
+  const keys = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
+  for (const k of keys.slice(max)) delete all[k];
+  setShared(store, all);
+}
+
 // ---- reading what gh returns
 
 const FAILED = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
@@ -104,16 +145,6 @@ export function runState(r) {
     return "failure";
   }
   return r.status === "in_progress" ? "running" : "queued";
-}
-
-/** Runs by workflow: [{ name, runs }], the workflow with the newest run first. */
-export function groupRuns(runs) {
-  const by = new Map();
-  for (const r of [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))) {
-    if (!by.has(r.workflowName)) by.set(r.workflowName, { name: r.workflowName, runs: [] });
-    by.get(r.workflowName).runs.push(r);
-  }
-  return [...by.values()];
 }
 
 /** Linear issue ids (PRD-123) for the given team keys, in order, once each. */
