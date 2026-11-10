@@ -55,6 +55,128 @@ export function tone(t, status) {
   return t[status] ?? t.unknown;
 }
 
+// ---- Linear families: spaces whose issues share a top issue (PRD-9992 →
+// PRD-9961 → PRD-10421) sit together under a header naming it. The issues come
+// from the Linear panel's cache (shared "linear.mine": my open issues, each with
+// its parent and grandparent).
+
+/** The issue a space works on: one of `byId`'s identifiers in its branch, folder or name. */
+export function issueOf(space, byId) {
+  for (const v of [space.branch, space.folder, space.name]) {
+    for (const m of String(v ?? "").matchAll(/([a-z][a-z0-9]*)-(\d+)/gi)) {
+      const hit = byId.get(`${m[1]}-${m[2]}`.toUpperCase());
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+
+/** Every issue id ("PRD-9528") a space's branch, folder or name holds, plus `more` (git branches). */
+export function idsIn(sp, more = []) {
+  const out = new Set();
+  for (const v of [...sp.flatMap((s) => [s.branch, s.folder, s.name]), ...more]) {
+    for (const m of String(v ?? "").matchAll(/([a-z]+)-(\d+)/gi)) out.add(`${m[1]}-${m[2]}`.toUpperCase());
+  }
+  return [...out];
+}
+
+// The Linear panel's cache has only my open issues. A worktree whose issue is
+// done, canceled or someone else's would match nothing, so those are looked up
+// here (once, then again now and then) into a cache of their own.
+export const SPACE_ISSUES_KEY = "linear.spaces";
+const LOOKUP_AGAIN = 10 * 60 * 1000; // an id Linear didn't answer for
+const LOOKUP_STALE = 60 * 60 * 1000; // one it did
+const LINEAR = `security find-generic-password -s linear-api-key -w | sed 's/^/Authorization: /' \
+  | curl -sS --max-time 20 https://api.linear.app/graphql -H @- -H 'Content-Type: application/json' -d "$1"`;
+const SPACE_ISSUE_FIELDS = "identifier title state { type name color } parent { identifier title parent { identifier title } }";
+
+/** One GraphQL request for these ids: per team, its issues with those numbers. */
+export function issuesQuery(ids) {
+  const teams = new Map();
+  for (const id of ids) {
+    const [, key, n] = id.match(/^([A-Z]+)-(\d+)$/) ?? [];
+    if (key) teams.set(key, [...(teams.get(key) ?? []), Number(n)]);
+  }
+  const keys = [...teams.keys()];
+  const query = `query(${keys.map((_, i) => `$f${i}: IssueFilter`).join(", ")}) { ${keys.map((_, i) =>
+    `t${i}: issues(first: 100, filter: $f${i}) { nodes { ${SPACE_ISSUE_FIELDS} } }`).join(" ")} }`;
+  const variables = Object.fromEntries(keys.map((k, i) => [`f${i}`, { team: { key: { eq: k } }, number: { in: teams.get(k) } }]));
+  return { query, variables };
+}
+
+const CLOSED = new Set(["completed", "canceled", "duplicate"]);
+/** The space's issue when Linear has closed it (done, canceled, duplicate): its worktree can likely go. */
+export function closedIssue(r, byId) {
+  const i = issueOf(r.w, byId) ?? (r.g?.branch ? issueOf({ branch: r.g.branch }, byId) : null);
+  return i && CLOSED.has(i.state?.type) ? i : null;
+}
+
+/** [issue, its parent, grandparent, …], from the cache where it has them, else as embedded. */
+export function lineage(issue, byId) {
+  const out = [issue], seen = new Set([issue.identifier]);
+  for (let p = issue.parent; p?.identifier && !seen.has(p.identifier);) {
+    const full = byId.get(p.identifier) ?? p;
+    out.push(full);
+    seen.add(p.identifier);
+    p = full.parent;
+  }
+  return out;
+}
+
+const FAMILY_COLORS = Object.values(MARK);
+export function familyColor(key) {
+  let h = 5381;
+  for (const ch of key) h = (Math.imul(h, 33) ^ ch.charCodeAt(0)) >>> 0;
+  return FAMILY_COLORS[h % FAMILY_COLORS.length];
+}
+
+/**
+ * Sibling rows ({ w, … }) in order, with each family's spaces moved together at its
+ * first one, under a header row ({ header: { key, id, issue, color, members } }).
+ * Members get `fam: { key, color, depth }`: depth is how many of its issue's
+ * ancestors have a space here. A family is two spaces or more, or one space on a
+ * sub-issue; a lone space on a top issue stays a plain row.
+ */
+export function familyRows(rows, byId) {
+  if (!byId.size) return rows;
+  const chain = new Map();
+  for (const r of rows) {
+    const i = issueOf(r.w, byId) ?? (r.g?.branch ? issueOf({ branch: r.g.branch }, byId) : null);
+    if (i) chain.set(r.w.id, lineage(i, byId));
+  }
+  const keyOf = (r) => { const c = chain.get(r.w.id); return c ? `${r.w.machine ?? ""}|${c.at(-1).identifier}` : null; };
+  const groups = new Map();
+  for (const r of rows) { const k = keyOf(r); if (k) { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); } }
+  const real = (k) => groups.get(k).length > 1 || chain.get(groups.get(k)[0].w.id).length > 1;
+  const out = [], done = new Set();
+  for (const r of rows) {
+    const k = keyOf(r);
+    if (!k || !real(k)) { out.push(r); continue; }
+    if (done.has(k)) continue;
+    done.add(k);
+    const members = groups.get(k);
+    const top = chain.get(r.w.id).at(-1);
+    const color = familyColor(top.identifier);
+    const own = new Map(members.map((m) => [chain.get(m.w.id)[0].identifier, m]));
+    const up = (m) => chain.get(m.w.id).slice(1).find((a) => own.has(a.identifier))?.identifier ?? null;
+    const kids = new Map(), tops = [];
+    for (const m of members) { const p = up(m); if (p) { if (!kids.has(p)) kids.set(p, []); kids.get(p).push(m); } else tops.push(m); }
+    const id = r.w.machine ? `${top.identifier}@${r.w.machine}` : top.identifier;
+    out.push({ header: { key: k, id, issue: top, color, members: members.map((m) => m.w.id), machine: r.w.machine ?? null } });
+    const seen = new Set();
+    const visit = (m, depth) => {
+      if (seen.has(m.w.id)) return;
+      seen.add(m.w.id);
+      out.push({ ...m, fam: { key: k, color, depth } });
+      for (const c of kids.get(chain.get(m.w.id)[0].identifier) ?? []) visit(c, depth + 1);
+    };
+    tops.forEach((m) => visit(m, 0));
+    members.forEach((m) => visit(m, 0));
+  }
+  return out;
+}
+const famIndent = (fam) => (fam ? 12 + fam.depth * 16 : 0);
+
 // ---- agents (from the shipped "agents" mod)
 
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
@@ -114,6 +236,7 @@ export default class Spaces extends View {
     this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    this.famFolded = new Set(JSON.parse(localStorage.getItem("families.folded") ?? "[]"));
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
     cx.timer.every(30000, (cx) => cx.notify());
@@ -135,6 +258,34 @@ export default class Spaces extends View {
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
+    this.asked = {}; // issue id -> when it was last looked up in Linear
+    this.lookupIssues(cx);
+    cx.timer.every(5000, (cx) => this.lookupIssues(cx));
+  }
+
+  // Looks up the issues spaces name that neither cache has (or has from long ago).
+  lookupIssues(cx) {
+    if (this.looking) return;
+    const now = Date.now();
+    const mine = new Set((shared("linear.mine")?.issues ?? []).map((x) => x.identifier));
+    const have = shared(SPACE_ISSUES_KEY) ?? { issues: {} };
+    const ids = idsIn(spaces(), Object.values(this.git).map((g) => g?.branch)).filter((id) => !mine.has(id)
+      && now - (this.asked[id] ?? 0) > LOOKUP_AGAIN
+      && !(have.issues[id]?.state?.name && now - have.issues[id].at < LOOKUP_STALE));
+    if (!ids.length) return;
+    for (const id of ids) this.asked[id] = now;
+    this.looking = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("sh", ["-c", LINEAR, "linear", JSON.stringify(issuesQuery(ids))]);
+        const data = r.code === 0 ? JSON.parse(r.stdout).data : null;
+        if (!data) return;
+        const issues = { ...(shared(SPACE_ISSUES_KEY)?.issues ?? {}) };
+        for (const x of Object.values(data).flatMap((t) => t?.nodes ?? [])) issues[x.identifier] = { ...x, at: now };
+        setShared(SPACE_ISSUES_KEY, { issues });
+        cx.notify();
+      } catch {} finally { this.looking = false; }
+    });
   }
 
   checkNew(cx) {
@@ -351,13 +502,14 @@ export default class Spaces extends View {
   }
 
   // One agent under its space, indented to the space's name.
-  agentRow({ a, name }, tree, t, now) {
+  agentRow({ a, name }, tree, t, now, fam = null) {
     const pic = programIcon(a.program, 14, t.foreground);
     const idle = a.status === "idle" && !a.focused;
     const when = this.changed[a.address]?.at;
     const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
-    return h_flex().id(`ag-${a.address}`).h(26).flex_none().pl(tree ? 52 : 35).pr(8).gap(8).items_center().rounded(7)
+    return h_flex().id(`ag-${a.address}`).h(26).flex_none().pl((tree ? 52 : 35) + famIndent(fam)).pr(8).gap(8).items_center().rounded(7)
       .text_size(12.5).cursor_pointer()
+      .when(Boolean(fam), (el) => el.relative().child(this.rail(`rail-ag-${a.address}`, fam, tree)))
       .when(a.focused, (el) => el.bg(t.selected))
       .when(!a.focused, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click(() => run("pane.focus", { pane: a.pane }))
@@ -386,36 +538,68 @@ export default class Spaces extends View {
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
+    const issues = new Map([...Object.values(shared(SPACE_ISSUES_KEY)?.issues ?? {}), ...(shared("linear.mine")?.issues ?? [])]
+      .map((x) => [x.identifier, x]));
     const out = [];
     const placed = new Set(); // repos whose worktrees are listed (under the first of its spaces)
-    for (const r of list) {
-      if (nested(r)) continue;
-      out.push({ ...r, tree: null });
-      if (!r.g || r.g.linked || placed.has(r.g.repo)) continue;
+    for (const r of familyRows(list.filter((r) => !nested(r)).map((r) => ({ ...r, tree: null })), issues)) {
+      out.push(r);
+      if (!r.w || !r.g || r.g.linked || placed.has(r.g.repo)) continue;
       placed.add(r.g.repo);
-      const kids = list.filter((k) => nested(k) && k.g.repo === r.g.repo);
-      kids.forEach((k, n) => out.push({ ...k, tree: n === kids.length - 1 ? "└─" : "├─" }));
+      const kids = familyRows(list.filter((k) => nested(k) && k.g.repo === r.g.repo).map((k) => ({ ...k, tree: "├─" })), issues);
+      const last = kids.findLast((k) => k.w);
+      for (const k of kids) out.push(k.w ? { ...k, tree: k === last ? "└─" : "├─" } : { ...k, tree: "├─" });
     }
     // Simulate the batch so later indexes include earlier moves. An attempted
     // write can lose a sync conflict: allow the echo to settle before retrying.
     const order = sp.map(w => w.id);
-    const target = out.map(r => r.w.id);
+    const target = out.filter(r => r.w).map(r => r.w.id);
     const key = JSON.stringify([order, target, machines()]);
     if (order.every((id, i) => id === target[i])) {
       this.ordering = null;
     } else if (this.ordering?.key !== key || this.orderingDue(Date.now())) {
       const moved = new Set();
       this.ordering = { key, at: Date.now(), machines: [] };
-      for (let i = 0; i < out.length; i++) {
-        const from = order.indexOf(out[i].w.id);
+      const spacesOut = out.filter(r => r.w);
+      for (let i = 0; i < spacesOut.length; i++) {
+        const from = order.indexOf(spacesOut[i].w.id);
         if (from === i) continue;
-        run("space.move", { id: out[i].w.id, index: i + 1 });
-        moved.add(out[i].w.machine ?? null);
+        run("space.move", { id: spacesOut[i].w.id, index: i + 1 });
+        moved.add(spacesOut[i].w.machine ?? null);
         order.splice(i, 0, order.splice(from, 1)[0]);
       }
       this.ordering.machines = [...moved];
     }
-    return out.filter(r => this.shown.has(r.w.id));
+    for (const r of out) if (r.w) r.closed = closedIssue(r, issues);
+    return out.filter(r => (r.w ? this.shown.has(r.w.id) : r.header.members.some((id) => this.shown.has(id))));
+  }
+
+  // A family's header: its top issue, its agents (working, waiting on you); folds.
+  familyHead({ header: h, tree }, by, t) {
+    const folded = this.famFolded.has(h.key);
+    const list = h.members.flatMap((id) => by.get(id) ?? []).map((x) => x.a);
+    const working = list.filter((a) => a.status === "working").length;
+    const blocked = list.filter((a) => a.status === "blocked").length;
+    return h_flex().id(`family-${h.id}`).h(24).mt(4).flex_none().pl(8 + (tree ? 22 : 0)).pr(8).gap(6).items_center().rounded(6)
+      .cursor_pointer().hover((st) => st.bg(t.hover)).text_size(11)
+      .on_click((_e, cx) => {
+        folded ? this.famFolded.delete(h.key) : this.famFolded.add(h.key);
+        localStorage.setItem("families.folded", JSON.stringify([...this.famFolded]));
+        cx.notify();
+      })
+      .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(10).flex_none().text_color(h.color))
+      .child(div().flex_none().font_semibold().text_color(h.color).child(h.issue.identifier))
+      .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(h.issue.title ?? ""))
+      .when(working > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().text_color(t.working)
+        .child(svg("mods/workspace-chrome/spinner.svg").size(10).spin(900)).child(String(working))))
+      .when(blocked > 0, (el) => el.child(h_flex().flex_none().gap(3).items_center().text_color(t.blocked)
+        .child(div().size(6).rounded(3).bg(t.blocked)).child(String(blocked))))
+      .when(folded, (el) => el.child(div().flex_none().text_color(t.dim).child(String(h.members.length))));
+  }
+
+  // The family's color down a member's (or its agent's) left edge.
+  rail(id, fam, tree) {
+    return div().id(id).absolute().top(0).bottom(0).left(8 + (tree ? 22 : 0) + 3).w(2).rounded(1).bg(fam.color);
   }
 
   // The rows, under a header per machine once one isn't this computer.
@@ -425,13 +609,15 @@ export default class Spaces extends View {
     const now = Date.now();
     const order = [];
     const draw = (r) => {
+      if (r.header) return collapsed ? [] : [this.familyHead(r, by, t)];
       if (collapsed) return [this.compact(r, t)];
+      if (r.fam && this.famFolded.has(r.fam.key)) return [];
       const mine = by.get(r.w.id) ?? [];
       for (const x of mine) order.push(x.a.address);
-      return [this.row(r, t), ...mine.map((x) => this.agentRow(x, r.tree, t, now))];
+      return [this.row(r, t), ...mine.map((x) => this.agentRow(x, r.tree, t, now, r.fam))];
     };
     this.agentOrder = order;
-    const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
+    const remote = [...new Set([...rows.map(r => r.w?.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
@@ -441,7 +627,7 @@ export default class Spaces extends View {
     if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.flatMap(draw);
     const machineNames = [null, ...remote];
     return machineNames.flatMap((m) => {
-      const mine = rows.filter((r) => (r.w.machine ?? null) === m);
+      const mine = rows.filter((r) => (r.w ? r.w.machine ?? null : r.header.machine) === m);
       const repair = this.reconnecting[m];
       const machine = this.machines.find(k => k.name === m) ?? repair?.machine;
       const connected = !m || machine?.state === "connected";
@@ -499,7 +685,7 @@ export default class Spaces extends View {
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
-  row({ w, i, g, tree }, t) {
+  row({ w, i, g, tree, fam, closed }, t) {
     // One highlight at a time: the focused agent's row takes it from its space.
     const on = w.active && !agents().some((a) => a.space === w.id && a.focused);
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
@@ -546,15 +732,29 @@ export default class Spaces extends View {
         cx.notify();
       })
       .on_mouse_down("right", () => this.menu(w))
+      .when(Boolean(fam), (el) => el.child(this.rail(`rail-${w.id}`, fam, tree)))
       .child(
         h_flex()
           .gap(9)
           .items_center()
-          .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
+          .when(Boolean(tree) || Boolean(fam), el => el.pl((tree ? 22 : 0) + famIndent(fam)))
+          .when(Boolean(tree), el => el.child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
+          .child(div().flex_shrink(0).max_w(150).truncate().text_color(closed ? t.muted : t.foreground).child(w.name))
+          .when(Boolean(closed), (el) => el.child(this.closedTag(w, closed, t)))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
+  }
+
+  // The issue is closed in Linear: the state as Linear draws it, so the worktree stands out for cleanup.
+  closedTag(w, issue, t) {
+    const s = issue.state;
+    const color = s.color ?? t.dim;
+    return h_flex().id(`closed-${w.id}`).flex_none().gap(3).px(5).h(17).rounded(5).items_center()
+      .bg(color + "22").text_size(10.5).font_semibold().text_color(color)
+      .tooltip(`${issue.identifier} is ${s.name ?? s.type} in Linear: this worktree can likely be cleaned up`)
+      .child(svg(`mods/linear-issues/state-${s.type}.svg`).size(10).flex_none().text_color(color))
+      .child(s.name ?? (s.type === "completed" ? "Done" : s.type === "canceled" ? "Canceled" : "Duplicate"));
   }
 
   compact({ w, i }, t) {

@@ -39,6 +39,29 @@ function find(node, id) {
   return null;
 }
 
+// A group's issues as a tree: each sub-issue right under its parent (when the
+// parent is in the same list), deeper levels further in. [{ issue, depth }], the
+// top level in the given order, each parent's sub-issues in the given order too.
+export function nest(items) {
+  const ids = new Set(items.map((i) => i.identifier));
+  const kids = new Map(), roots = [];
+  for (const i of items) {
+    const p = i.parent?.identifier;
+    if (p && p !== i.identifier && ids.has(p)) { if (!kids.has(p)) kids.set(p, []); kids.get(p).push(i); }
+    else roots.push(i);
+  }
+  const out = [], seen = new Set();
+  const visit = (i, depth) => {
+    if (seen.has(i.identifier)) return;
+    seen.add(i.identifier);
+    out.push({ issue: i, depth });
+    for (const k of kids.get(i.identifier) ?? []) visit(k, depth + 1);
+  };
+  for (const r of roots) visit(r, 0);
+  for (const i of items) visit(i, 0); // a parent loop: still listed once
+  return out;
+}
+
 export default class LinearIssues extends View {
   init(_props, cx) {
     if (props()?.view === "detail") {
@@ -250,16 +273,20 @@ export default class LinearIssues extends View {
   }
 
 
-  row(t, issue, all) {
+  // `depth`: how far down its parent's tree (0: top). A sub-issue whose parent
+  // isn't listed names it instead (↑ PRD-9961), and the name opens the parent.
+  row(t, issue, all, depth = 0) {
     const matched = spacesFor(issue.identifier, all);
+    const parent = depth === 0 ? issue.parent : null;
     const list = this.agentsFor(matched);
     const top = list[0]?.status ?? null;
     // A gutter mark on the row's edge: the agent's status color, faint for a space alone.
     const gutter = !matched.length ? "#00000000" : top && top !== "idle" ? t[top] ?? t.dim : t.border;
-    return h_flex().id(`li-${issue.identifier}`).w_full().h(30).flex_none().pl(2).pr(8).gap(7).items_center()
+    return h_flex().id(`li-${issue.identifier}`).w_full().h(30).flex_none().pl(2 + depth * 16).pr(8).gap(7).items_center()
       .rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
       .when(shared(DETAIL_KEY) === issue.identifier, (el) => el.bg(t.selected))
       .on_click(() => this.showDetail(issue))
+      .when(depth > 0, (el) => el.child(div().w(8).h(15).mt(-14).ml(-4).flex_none().border_l(1).border_b(1).border_color(t.border).rounded_bl(4)))
       .child(div().w(3).h(18).flex_none().rounded(2).bg(gutter))
       .child(statePicker(t, { id: `li-state-${issue.identifier}`, state: issue.state, steps: this.steps,
         states: this.picking === issue.identifier ? teamStates(shared(STATES_KEY)?.nodes, issue.team?.key) : [],
@@ -268,6 +295,11 @@ export default class LinearIssues extends View {
         onPick: (s, cx) => this.pickState(issue, s, cx) }))
       .child(div().w(70).flex_none().text_size(11).text_color(t.muted).child(issue.identifier))
       .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(issue.title))
+      .when(Boolean(parent), (el) => el.child(div().id(`li-parent-${issue.identifier}`).flex_none().px(5).rounded(4)
+        .text_size(10).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground))
+        .tooltip(`${parent.identifier} ${parent.title ?? ""}`.trim())
+        .on_click((_e, cx) => { cx.stop_propagation(); this.showDetail(parent); })
+        .child(`↑ ${parent.identifier}`)))
       .when(matched.length > 0, (el) => el.child(this.agentChip(t, issue, matched, list)))
       .when(matched.length === 0 && Boolean(issue.branchName), (el) =>
         el.child(iconButton(t, `li-wt-${issue.identifier}`, "+", () => this.newWorktree(issue))));
@@ -342,7 +374,7 @@ export default class LinearIssues extends View {
           .child(div().flex_1().min_w(0).truncate().child(g.name))
           .child(this.summary(t, g, all))
           .child(div().flex_none().text_size(10).font_normal().text_color(t.dim).child(String(g.items.length)));
-        return folded ? [head] : [head, ...g.items.map((i) => this.row(t, i, all))];
+        return folded ? [head] : [head, ...nest(g.items).map(({ issue, depth }) => this.row(t, issue, all, depth))];
       }));
   }
 
@@ -359,7 +391,7 @@ export default class LinearIssues extends View {
           .child(div().flex_1().min_w(0).truncate().child(g.name))
           .child(this.summary(t, g, all))
           .child(div().flex_none().text_size(10).font_normal().text_color(t.dim).child(String(g.items.length)))] : []),
-        ...g.items.map((i) => this.row(t, i, all)),
+        ...nest(g.items).map(({ issue, depth }) => this.row(t, issue, all, depth)),
       ]));
     return sideNav(t, {
       id: "li-nav", picked, body, state: this.nav, onResized: (w) => save("navWidth", w),

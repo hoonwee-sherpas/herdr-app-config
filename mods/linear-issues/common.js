@@ -32,7 +32,8 @@ export const STATES_KEY = "linear.workflowStates";
 export const STATES_TTL = 24 * 60 * 60 * 1000;
 export const STATE_FIELDS = "id name type position color team { id key }";
 export const ISSUE_FIELDS = `id identifier title url branchName priority
-  state { id name type position color } project { name } team { key } assignee { name }`;
+  state { id name type position color } project { name } team { key } assignee { name }
+  parent { identifier title parent { identifier title } }`;
 export const MINE_QUERY = `{ viewer { assignedIssues(first: 250, orderBy: updatedAt,
   filter: { state: { type: { nin: ["completed", "canceled", "duplicate"] } } }) { nodes { ${ISSUE_FIELDS} } } } }`;
 export const STATES_QUERY = `{ workflowStates(first: 250) { nodes { ${STATE_FIELDS} } } }`;

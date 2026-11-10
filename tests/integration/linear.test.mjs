@@ -418,3 +418,50 @@ test("detail: a status picked there is in the cached copy too", async () => {
   assert.equal(details.get("PRD-7").data.state.name, "Done");
   assert.equal(host.shared["linear.details"], undefined, "in memory, not shared.json");
 });
+
+// ---- parents and sub-issues
+const sub = (n, parent, title = `Issue ${n}`) =>
+  ({ ...inProject(n, "상시", title), parent: parent ? { identifier: `PRD-${parent}`, title: `Parent ${parent}` } : null });
+const tooltip = (el) => el.calls.find(([n]) => n === "tooltip")?.[1][0];
+
+test("panel: the query asks for each issue's parent and its parent", async () => {
+  await mount(LinearIssues);
+  assert.match(api[0], /parent \{ identifier title parent \{ identifier title \} \}/);
+});
+
+test("panel: sub-issues sit under their parent, nested by level, when it's in the same group", async () => {
+  mine(sub(11, 10), sub(13, null), sub(12, 10), sub(14, 11), sub(10, null));
+  const { v } = await mount(LinearIssues);
+  const root = v.render();
+  assert.deepEqual(rowIds(root), ["PRD-13", "PRD-10", "PRD-11", "PRD-14", "PRD-12"], "the top level keeps its order");
+  const pl = (id) => byId(root, `li-${id}`).props.pl;
+  assert.equal(pl("PRD-10"), pl("PRD-13"));
+  assert.ok(pl("PRD-11") > pl("PRD-10"), "a sub-issue is indented");
+  assert.ok(pl("PRD-14") > pl("PRD-11"), "a sub-sub-issue further");
+  assert.equal(pl("PRD-11"), pl("PRD-12"));
+});
+
+test("panel: nesting also holds by state, within each state", async () => {
+  mine(sub(11, 10), sub(10, null));
+  const { v, cx } = await mount(LinearIssues);
+  byId(v.render(), "li-by-state").handlers.on_click({}, cx);
+  assert.deepEqual(rowIds(v.render()), ["PRD-10", "PRD-11"]);
+});
+
+test("panel: a sub-issue whose parent isn't listed names it, and the tag opens the parent", async () => {
+  host.layout = { id: "root", children: [{ id: "linear-detail", hidden: true }] };
+  mine(sub(21, 9961, "Host verify API"), sub(22, null));
+  const { v, cx } = await mount(LinearIssues);
+  const root = v.render();
+  assert.match(text(byId(root, "li-PRD-21")), /↑\s*PRD-9961/);
+  assert.equal(tooltip(byId(root, "li-parent-PRD-21")), "PRD-9961 Parent 9961");
+  assert.doesNotMatch(text(byId(root, "li-PRD-22")), /↑/);
+  byId(root, "li-parent-PRD-21").handlers.on_click({}, cx);
+  assert.equal(host.shared[DETAIL_KEY], "PRD-9961");
+});
+
+test("panel: a listed parent isn't tagged on its sub-issues", async () => {
+  mine(sub(11, 10), sub(10, null));
+  const { v } = await mount(LinearIssues);
+  assert.doesNotMatch(text(byId(v.render(), "li-PRD-11")), /↑/);
+});
