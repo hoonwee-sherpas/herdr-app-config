@@ -9,6 +9,7 @@
 !/package.json
 !/tests/
 !/keys.json
+!/skills/
 
 # Layouts: only our own (shipped ones are Herdr's).
 !/layouts/

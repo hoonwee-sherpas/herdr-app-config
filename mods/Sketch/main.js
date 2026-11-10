@@ -27,20 +27,14 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse } from "./rough.js";
 import { appHome, home, readTextFile, writeTextFile, watchFolder, exec, theme, settings, nextCommand,
   props, spaces, panes, focused } from "herdr";
+import { boardSlug } from "./slug.js";
+
+export { boardSlug };
 
 // Boards, relative to the app's folder: the old shared one, and one per worktree.
 const LEGACY = "data/sketch";
 const BOARDS = "data/sketch/boards";
 const INDEX = "data/sketch/boards.json";
-
-/** A worktree's board folder name: its last two folders (and machine), readable, plus a hash of the whole path. */
-export function boardSlug(root, machine) {
-  const safe = (x) => x.replace(/[^\w.-]+/g, "_");
-  let h = 5381;
-  for (const ch of `${machine ?? ""}:${root}`) h = (Math.imul(h, 33) ^ ch.charCodeAt(0)) >>> 0;
-  const parts = String(root).split("/").filter(Boolean).slice(-2).map(safe);
-  return [...(machine ? [safe(machine)] : []), ...parts, h.toString(16).padStart(8, "0")].join("-");
-}
 
 // The space this pane is in: the one every Sketch pane is in, else the focused
 // Sketch pane's, else the focused (or shown) space. (A mod pane isn't told its pane.)

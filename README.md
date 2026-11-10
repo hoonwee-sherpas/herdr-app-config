@@ -15,6 +15,7 @@ changes show up as soon as the files are saved.
 | `mods/linear-search/` | ⌘I popup that searches every Linear issue |
 | `mods/github/` | The GitHub panel for the active space's repo (through `gh`): open pull requests (All / Mine / Review requested, search), closed ones 25 a page (All / Mine / Reviewed by me and the search run on GitHub, so they cover every page), Actions runs 30 a page with a resizable side nav of workflows, and a detail view (a PR's reviews, checks, files, description and comments; a run's jobs, steps and failed log, with re-run and cancel). PRs link to their space or offer a worktree, and to their Linear issue. Toasts when CI fails on your PR, it gets a review, or your review is requested |
 | `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text and pictures; ⌘C/⌘X/⌘V copy, cut and paste shapes (between boards too), ⌘D duplicates, ⌘G/⌘⇧G group and ungroup, right-click opens a menu of everything, drag a corner handle or anywhere along an edge of the selection outline to resize (text by its font size), and each tool goes back to select after one use; follows light/dark themes. Each git worktree has its own board under `data/sketch/boards/` (`data/sketch/boards.json` says whose is whose), which agents can edit (format in `mods/Sketch/FORMAT.md`); the home folder keeps the old shared `data/sketch/board.json` |
+| `skills/herdr-sketch/` | An Agent Skill for Claude Code and Codex: an agent in any worktree finds that worktree's Sketch board (`scripts/sketch-board.mjs`), draws on it, and checks it (`… check`) |
 | `keys.json` | Key bindings, including the ones below |
 | `tests/`, `package.json` | Unit and integration tests for the mods (`npm test`); how to write them is in `tests/AGENTS.md` |
 | `CLAUDE.md` | Points agents at `tests/AGENTS.md` (Herdr rewrites the root `AGENTS.md`) |
@@ -66,7 +67,16 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
 
 4. **Pick the layout:** ⌘⇧L → `main-linear`.
 
-5. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
+5. **Agent skill.** Link the Sketch skill where Claude Code and Codex look for skills:
+
+   ```sh
+   ln -s ~/.config/herdr-app/skills/herdr-sketch ~/.claude/skills/herdr-sketch
+   mkdir -p ~/.agents/skills && ln -s ~/.config/herdr-app/skills/herdr-sketch ~/.agents/skills/herdr-sketch
+   ```
+
+   Then "draw the login flow on the board" in any worktree's agent lands on that worktree's board.
+
+6. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
    (and the same for `linear-issues`, `tabs-linear`, `Sketch`, `spaces-agents` and `github`), then `herdr-app status`,
    which should list no errors.
 

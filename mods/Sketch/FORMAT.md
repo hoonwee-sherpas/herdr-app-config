@@ -2,15 +2,17 @@
 
 Each git worktree has its own board. The Sketch pane (⌘⇧E) shows the one for
 its space's worktree and reloads it the moment it changes, so an agent draws by
-editing that file. To find yours, look up your worktree's root
-(`git rev-parse --show-toplevel`) in `~/.config/herdr-app/data/sketch/boards.json`:
+editing that file. To find yours, run
+`node ~/.config/herdr-app/skills/herdr-sketch/scripts/sketch-board.mjs` in the worktree
+(it prints the board's path; `… check` validates the board after you edit it), or look up
+the worktree's root (`git rev-parse --show-toplevel`) in `~/.config/herdr-app/data/sketch/boards.json`:
 
 ```json
 { "/Users/me/code/app-wt": { "board": "data/sketch/boards/code-app-wt-1a2b3c4d/board.json", "branch": "feat/login", "machine": null } }
 ```
 
 `board` is relative to `~/.config/herdr-app`; on another machine the key is
-`<machine>:<root>`. A worktree only gets an entry once a Sketch pane has shown it.
+`<machine>:<root>`. A worktree gets an entry once a Sketch pane has shown it or the script has run there.
 The home folder (and anything outside a space) keeps the old shared board,
 `data/sketch/board.json`.
 

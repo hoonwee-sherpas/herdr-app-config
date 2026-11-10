@@ -82,3 +82,14 @@ test("⌘D in a Sketch board duplicates instead of splitting the pane", () => {
 test("⌘⇧E in main-linear opens Sketch through the tab bar, which tells it the worktree", () => {
   assert.equal(JSON.parse(read("keys.json"))["layout:main-linear"]["cmd-shift-e"], "tabs-linear.sketch");
 });
+
+test("the Sketch agent skill names itself, and every path it tells an agent to use exists", () => {
+  const skill = read("skills/herdr-sketch/SKILL.md");
+  const front = skill.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? "";
+  assert.match(front, /^name: herdr-sketch$/m);
+  assert.match(front, /^description: .{40,}$/m);
+  const paths = [...skill.matchAll(/~\/\.config\/herdr-app\/([\w./-]+\.(?:mjs|md))/g)].map((m) => m[1]);
+  assert.ok(paths.length >= 2, "points at the script and FORMAT.md");
+  for (const p of paths) assert.ok(existsSync(home + p), p);
+  assert.match(read("mods/Sketch/FORMAT.md"), /skills\/herdr-sketch\/scripts\/sketch-board\.mjs/);
+});
