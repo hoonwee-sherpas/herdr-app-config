@@ -19,7 +19,7 @@ export const host = {
       spaces: [], panes: [], agents: [], terminals: [], machines: [], focused: null,
       layout: { id: "root", type: "row", children: [] },
       theme: { ...LIGHT }, settings: { zoom: 1 }, window: { active: true, platform: "macos" },
-      props: {}, shared: {}, home: "/home/test", appHome: "/app",
+      props: {}, shared: {}, keys: [], home: "/home/test", appHome: "/app",
       runs: [], notices: [], overlays: [], closedOverlays: [], execs: [], agentOrder: null,
       files: new Map(), watchers: [], commands: [],
       exec: async () => ({ code: 0, stdout: "", stderr: "" }),
@@ -44,6 +44,7 @@ export const layout = () => host.layout;
 export const theme = () => host.theme;
 export const settings = () => host.settings;
 export const window = () => host.window;
+export const keys = () => host.keys;
 export const props = () => host.props;
 export const home = () => host.home;
 export const appHome = () => host.appHome;

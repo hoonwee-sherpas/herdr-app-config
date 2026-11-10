@@ -8,7 +8,7 @@ changes show up as soon as the files are saved.
 
 | Path | What it is |
 |---|---|
-| `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, GitHub, Linear), with one Spaces list that shows each space's agents |
+| `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, GitHub, Linear), with one Spaces list that shows each space's agents, and Claude/Codex usage in the status bar |
 | `mods/spaces-agents/` | That sidebar list: a copy of Herdr's Spaces list with each space's agents (status, time in that state) listed under it; replaces the separate Agents list |
 | `mods/tabs-linear/` | The tab bar for that layout, with buttons that open the panel |
 | `mods/linear-issues/` | The Linear panel: issues assigned to you, with a search, by project (a resizable side nav of projects) or by state, matched to Herdr spaces by branch, plus an issue detail view |
@@ -16,6 +16,7 @@ changes show up as soon as the files are saved.
 | `mods/github/` | The GitHub panel for the active space's repo (through `gh`): open pull requests (All / Mine / Review requested, search), closed ones 25 a page (All / Mine / Reviewed by me and the search run on GitHub, so they cover every page), Actions runs 30 a page with a resizable side nav of workflows, and a detail view (a PR's reviews, checks, files, description and comments; a run's jobs, steps and failed log, with re-run and cancel). PRs link to their space or offer a worktree, and to their Linear issue. Toasts when CI fails on your PR, it gets a review, or your review is requested |
 | `mods/Sketch/` | A whiteboard pane drawn natively: boxes, ellipses, diamonds, arrows that stay attached, pen, text and pictures; ⌘C/⌘X/⌘V copy, cut and paste shapes (between boards too), ⌘D duplicates, ⌘G/⌘⇧G group and ungroup, right-click opens a menu of everything, drag a corner handle or anywhere along an edge of the selection outline to resize (text by its font size), and each tool goes back to select after one use; follows light/dark themes. Each git worktree has its own board under `data/sketch/boards/` (`data/sketch/boards.json` says whose is whose), which agents can edit (format in `mods/Sketch/FORMAT.md`); the home folder keeps the old shared `data/sketch/board.json` |
 | `skills/herdr-sketch/` | An Agent Skill for Claude Code and Codex: an agent in any worktree finds that worktree's Sketch board (`scripts/sketch-board.mjs`), draws on it, and checks it (`… check`) |
+| `mods/usage-limits/` | The status bar for that layout: Herdr's own (a copy of `workspace-status`, which can't be changed) with Claude and Codex plan usage right after the agent count (the weekly meter, and the 5-hour one whenever the server reports a 5-hour limit, never on the Ultra plan (Max 20x), which has none; amber from 70%, red from 90%); click it for every limit, when each resets, and the plan. Claude's comes from the endpoint Claude Code's `/usage` reads, with Claude Code's own login (the token goes from the keychain to curl through a pipe; an expired login is left for Claude Code to refresh), every 5 minutes. Codex's comes from the rate limits it last logged in `~/.codex/sessions`, so it shows once Codex has run |
 | `keys.json` | Key bindings, including the ones below |
 | `tests/`, `package.json` | Unit and integration tests for the mods (`npm test`); how to write them is in `tests/AGENTS.md` |
 | `CLAUDE.md` | Points agents at `tests/AGENTS.md` (Herdr rewrites the root `AGENTS.md`) |
@@ -77,7 +78,7 @@ issue in Linear, ⌘G goes to the issue's space or makes a worktree for its bran
    Then "draw the login flow on the board" in any worktree's agent lands on that worktree's board.
 
 6. **Check:** `herdr-app check ~/.config/herdr-app/mods/linear-search`
-   (and the same for `linear-issues`, `tabs-linear`, `Sketch`, `spaces-agents` and `github`), then `herdr-app status`,
+   (and the same for `linear-issues`, `tabs-linear`, `Sketch`, `spaces-agents`, `github` and `usage-limits`), then `herdr-app status`,
    which should list no errors.
 
 ## Things to know

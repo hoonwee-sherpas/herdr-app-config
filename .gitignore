@@ -25,6 +25,7 @@
 !/mods/Sketch/
 !/mods/spaces-agents/
 !/mods/github/
+!/mods/usage-limits/
 /mods/*/gpui-kit.d.ts
 /mods/*/herdr.d.ts
 /mods/*/jsconfig.json
