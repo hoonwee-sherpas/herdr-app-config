@@ -7,7 +7,9 @@
 // home folder (or none) keeps the old shared data/sketch/board.json.
 //
 // Keys: V select · R box · O ellipse · D diamond · A arrow · L line · P pen ·
-// T text · I insert images · ⌘C / ⌘X / ⌘V copy, cut, paste (shapes, or a
+// T text · K picture shapes (person, database, server, cloud, browser, phone,
+// document, queue, frame, note, bubble, idea, question, alert, gear, clock,
+// lock, envelope, folder) · I insert images · ⌘C / ⌘X / ⌘V copy, cut, paste (shapes, or a
 // picture) · ⌘D duplicate · ⌘G / ⌘⇧G group, ungroup · ⌘A select all · 1–6 color · F fill · S dashed ·
 // (⌘D and ⌘⇧G come as commands, see keys.json) · right-click for a menu ·
 // ⌫ delete · ↵ / double-click edit text · ⌘Z / ⌘⇧Z undo/redo · ⇧1 fit · Esc deselect ·
@@ -24,7 +26,8 @@
 
 import { View, div, image, PathBuilder, Background } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
-import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse } from "./rough.js";
+import { rng, roughLine, roughPolygon, roughPolyline, roughEllipse, roughCurve } from "./rough.js";
+import { ICONS, ICON_TYPES, FRAME_TITLE, SECTIONS, ROUND } from "./icons.js";
 import { appHome, home, readTextFile, writeTextFile, watchFolder, exec, theme, settings, nextCommand,
   props, spaces, panes, focused } from "herdr";
 import { boardSlug } from "./slug.js";
@@ -61,7 +64,7 @@ const TOOLS = [
   ["select", "v", "Select"], ["rect", "r", "Box"], ["ellipse", "o", "Ellipse"], ["diamond", "d", "Diamond"],
   ["arrow", "a", "Arrow"], ["line", "l", "Line"], ["pen", "p", "Pen"], ["text", "t", "Text"],
 ];
-export const BOXY = new Set(["rect", "ellipse", "diamond", "text", "image"]);
+export const BOXY = new Set(["rect", "ellipse", "diamond", "text", "image", ...ICON_TYPES]);
 // Shapes that take a text label (double-click, Enter).
 const labeled = (s) => BOXY.has(s.type) && s.type !== "image";
 // Files the image converter reads.
@@ -176,7 +179,7 @@ export function edge(s, aim) {
   const dx = aim[0] - c[0], dy = aim[1] - c[1];
   if (!dx && !dy) return c;
   const hw = b.w / 2 + GAP, hh = b.h / 2 + GAP;
-  const k = s.type === "ellipse" ? 1 / Math.hypot(dx / hw, dy / hh)
+  const k = s.type === "ellipse" || ROUND.has(s.type) ? 1 / Math.hypot(dx / hw, dy / hh)
     : s.type === "diamond" ? 1 / (Math.abs(dx) / hw + Math.abs(dy) / hh)
     : Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity);
   return [c[0] + dx * k, c[1] + dy * k];
@@ -212,6 +215,16 @@ export function distSeg(p, a, b) {
 }
 
 export function hits(s, p, byId, tol) {
+  if (s.type === "frame") {
+    // Its border or its title strip: a press in its middle is on the canvas.
+    const b = norm(s);
+    const near = (v, edge) => Math.abs(v - edge) <= tol + 4;
+    const within = (v, lo, hi) => v >= lo - tol && v <= hi + tol;
+    const title = Math.max(80, textSize({ text: s.text ?? "", fontSize: 14 }).w + 16);
+    return (within(p[0], b.x, b.x + b.w) && (near(p[1], b.y) || near(p[1], b.y + b.h)))
+      || (within(p[1], b.y, b.y + b.h) && (near(p[0], b.x) || near(p[0], b.x + b.w)))
+      || (p[0] >= b.x && p[0] <= b.x + Math.min(b.w, title) && p[1] >= b.y && p[1] <= b.y + FRAME_TITLE);
+  }
   if (BOXY.has(s.type)) {
     const b = bbox(s);
     return p[0] >= b.x - tol && p[0] <= b.x + b.w + tol && p[1] >= b.y - tol && p[1] <= b.y + b.h + tol;
@@ -337,6 +350,7 @@ export default class Sketch extends View {
     this.pastedText = null;
     this.ranAt = {};        // when a key that also comes as a command last ran, by name
     this.menu = null;       // the right-click menu: { x, y } on screen, `at` in the world
+    this.palette = false;   // the picture shapes palette (K, the Shapes button)
     // Which board: set once the pane knows its worktree (locate()).
     this.rel = null;        // its folder, relative to the app's
     this.where = null;      // { root, machine, branch }, or null for the old shared board
@@ -548,6 +562,7 @@ export default class Sketch extends View {
 
   setTool(tool) {
     this.tool = tool;
+    this.palette = false;
     if (tool !== "select") this.sel = [];
   }
 
@@ -598,6 +613,7 @@ export default class Sketch extends View {
     cx.stop_propagation();
     // A press outside an open menu only closes it.
     if (this.menu) { this.menu = null; return; }
+    this.palette = false;
     // Before taking focus: a Space remembered while the keyboard was elsewhere is stale.
     if (this.spaceHeld && !this.spaceStillDown()) this.spaceHeld = false;
     this.measure(e);
@@ -663,8 +679,17 @@ export default class Sketch extends View {
     }
     if (this.tool === "pen") s = { id: newId(), type: "pen", points: [p], ...style };
     else if (this.tool === "arrow" || this.tool === "line") s = { id: newId(), type: this.tool, points: [p, p], ...style };
-    else s = { id: newId(), type: this.tool, x: p[0], y: p[1], w: 0, h: 0, ...style, ...(this.fill ? { fill: COLORS[this.color][1] } : {}) };
-    this.shapes.push(s);
+    else {
+      // Fill on: the picked color's. Off: a sticky note is still yellow.
+      const fill = this.fill ? COLORS[this.color][1] : ICONS[this.tool]?.fill;
+      s = { id: newId(), type: this.tool, x: p[0], y: p[1], w: 0, h: 0, ...style, ...(fill ? { fill } : {}) };
+    }
+    if (s.type === "frame") {
+      // A frame goes behind everything but other frames, and is dashed.
+      s.dashed = true;
+      const i = this.shapes.findIndex((x) => x.type !== "frame");
+      if (i < 0) this.shapes.push(s); else this.shapes.splice(i, 0, s);
+    } else this.shapes.push(s);
     this.drag = { kind: "draw", s, start: p };
   }
 
@@ -880,6 +905,37 @@ export default class Sketch extends View {
       })));
   }
 
+  // The picture shapes, each with a small drawing of itself: a pick sets the tool.
+  drawPalette(out) {
+    if (!this.palette) return;
+    const t = this.t;
+    const tile = (type) => {
+      const ic = ICONS[type], [w, h] = ic.size, k = 30 / Math.max(w, h);
+      const d = ic.draw(2 + (30 - w * k) / 2, 2 + (30 - h * k) / 2, w * k, h * k);
+      let pb = PathBuilder.stroke(1.3);
+      for (const p of d.parts) {
+        if (p.k === "ellipse") { pb = ellipse(pb, p.x, p.y, p.w, p.h); continue; }
+        pb = pb.move_to(p.pts[0][0], p.pts[0][1]);
+        for (const q of p.pts.slice(1)) pb = pb.line_to(q[0], q[1]);
+        if (p.closed) pb = pb.close();
+      }
+      return v_flex().id(`shape-${type}`).w(70).py(6).gap(4).items_center().rounded(6).cursor_pointer()
+        .bg(this.tool === type ? `${SELECT}22` : "#00000000").hover((el) => el.bg(t.hover))
+        .on_click((_e, cx) => { this.setTool(type); this.handle.focus(); cx.notify(); })
+        .child(div().relative().size(34).child(window.paint_path(pb.build(), t.foreground).absolute().top(0).left(0).size_full()))
+        .child(div().text_size(11).text_color(t.foreground).child(ic.label));
+    };
+    out.push(v_flex().id("sketch-shapes").absolute().left(8).top(8).p(6).gap(2)
+      .rounded(8).border_1().border_color(t.border).bg(t.popover ?? t.background).shadow_lg()
+      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+      .on_scroll_wheel((_e, cx) => cx.stop_propagation())
+      .children(SECTIONS.flatMap(([key, heading]) => [
+        div().px(6).pt(4).text_size(11).font_semibold().text_color(t.dim).child(heading),
+        h_flex().flex_wrap().w(4 * 70 + 6).gap(2).children(ICON_TYPES.filter((type) => ICONS[type].section === key).map(tile)),
+      ]))
+      .child(div().px(6).pt(4).text_size(11).text_color(t.dim).child("Pick one, then drag on the board (or click for its usual size)")));
+  }
+
   // ---- images
 
   // Opens the file dialog and adds the chosen pictures.
@@ -1047,7 +1103,10 @@ export default class Sketch extends View {
     } else {
       Object.assign(s, norm(s));
       // A click without a drag makes a default-size shape.
-      if (s.w * this.zoom < 4 && s.h * this.zoom < 4) { s.w = 160; s.h = 72; s.x -= 80; s.y -= 36; }
+      if (s.w * this.zoom < 4 && s.h * this.zoom < 4) {
+        const [w, h] = ICONS[s.type]?.size ?? [160, 72];
+        s.w = w; s.h = h; s.x -= w / 2; s.y -= h / 2;
+      }
       this.tool = "select";
       this.sel = [s.id];
     }
@@ -1086,6 +1145,7 @@ export default class Sketch extends View {
       return;
     }
     if (this.menu && k === "escape") { this.menu = null; cx.stop_propagation(); cx.notify(); return; }
+    if (this.palette && k === "escape") { this.palette = false; cx.stop_propagation(); cx.notify(); return; }
     const named = KEYED[k];
     if (named && this.can(named)) {
       this.ranAt[named] = Date.now();
@@ -1101,6 +1161,7 @@ export default class Sketch extends View {
     if (tool) this.setTool(tool[0]);
     else if (digit >= 0) this.recolor(cx, digit);
     else if (k === "f") this.toggleFill(cx);
+    else if (k === "k") this.palette = !this.palette;
     else if (k === "h") this.toggleRough();
     else if (k === "m") this.toggleBars();
     else if (k === "s") {
@@ -1154,6 +1215,50 @@ export default class Sketch extends View {
       const b = norm(s);
       const [x, y] = this.screen([b.x, b.y]);
       out.push(image(`${this.rel ?? LEGACY}/${s.src}`).absolute().left(x).top(y).w(b.w * z).h(b.h * z));
+      return;
+    }
+    if (ICONS[s.type]) {
+      const b = norm(s);
+      if (b.w < 1 || b.h < 1) return;
+      const d = ICONS[s.type].draw(b.x, b.y, b.w, b.h);
+      // One part on screen: added to the path builder `pb`.
+      const trace = (pb, p) => {
+        if (p.k === "ellipse") { const [ex, ey] = this.screen([p.x, p.y]); return ellipse(pb, ex, ey, p.w * z, p.h * z); }
+        const pts = p.pts.map((q) => this.screen(q));
+        if (p.k === "poly" && p.closed) return pb.add_polygon(pts, true);
+        pb = pb.move_to(pts[0][0], pts[0][1]);
+        for (const q of pts.slice(1)) pb = pb.line_to(q[0], q[1]);
+        return p.closed ? pb.close() : pb;
+      };
+      if (s.fill) for (const f of d.fill) layer(trace(PathBuilder.fill(), f), Background.solid(fillFor(s.fill, this.dark)));
+      for (const p of d.parts) if (p.solid) layer(trace(PathBuilder.fill(), p), ink);
+      const lines = d.parts.filter((p) => !p.solid);
+      if (rough) {
+        const rand = rng(s.id);
+        layer(dash(sketchy(lines.flatMap((p) => (p.k === "ellipse" ? roughEllipse(p.x, p.y, p.w, p.h, rand)
+          : p.k === "curve" ? roughCurve(p.pts, rand, p.closed)
+          : p.closed ? roughPolygon(p.pts, rand) : roughPolyline(p.pts, rand))))), ink);
+      } else {
+        let pb = PathBuilder.stroke(width);
+        for (const p of lines) pb = trace(pb, p);
+        layer(dash(pb), ink);
+      }
+      if (s.text) {
+        const [x, y] = this.screen([b.x, b.y]);
+        const w = b.w * z, h = b.h * z, words = this.editing === s.id ? "" : s.text, size = (s.fontSize ?? 16) * z;
+        if (d.label === "below") {
+          const lw = Math.max(w, 160 * z);
+          out.push(div().absolute().left(x + (w - lw) / 2).top(y + h + 4 * z).w(lw).flex().justify_center()
+            .text_size(size).text_color(ink).text_center().child(words));
+        } else if (d.label === "title") {
+          out.push(div().absolute().left(x + 8 * z).top(y + 5 * z).text_size(14 * z).font_semibold().text_color(ink)
+            .whitespace_nowrap().child(words));
+        } else {
+          const [lx, ly] = this.screen([d.label.x, d.label.y]);
+          out.push(div().absolute().left(lx).top(ly).w(d.label.w * z).h(d.label.h * z).flex().items_center().justify_center()
+            .px(6 * z).text_size(size).text_color(ink).text_center().overflow_hidden().child(words));
+        }
+      }
       return;
     }
     if (SHAPE_PATH[s.type]) {
@@ -1322,12 +1427,14 @@ export default class Sketch extends View {
     this.drawSelection(byId, layers);
     this.editor(layers);
     this.drawMenu(layers);
+    this.drawPalette(layers);
     const first = this.selection()[0];
     const cursor = this.drag?.kind === "pan" ? "grabbing" : this.spaceStillDown() ? "grab" : this.tool === "select" ? "default" : "crosshair";
 
     const status = this.error ?? this.note ?? `${Math.round(this.zoom * 100)}%`;
     const toolbar = h_flex().id("sketch-toolbar").flex_none().flex_wrap().min_h(40).py(6).px(10).gap(2).items_center().border_b(1).border_color(t.border).bg(t.chrome)
       .children(TOOLS.map(([name, key, label]) => this.button(`tool-${name}`, `${label} ${key.toUpperCase()}`, this.tool === name, () => this.setTool(name))))
+      .child(this.button("tool-shapes", `${ICONS[this.tool]?.label ?? "Shapes"} ▾ K`, Boolean(ICONS[this.tool]) || this.palette, () => { this.palette = !this.palette; }))
       .child(div().w(12))
       .children(COLORS.map(([ink], i) => div().id(`color-${i}`).size(18).rounded(9).bg(inkFor(ink, this.dark)).cursor_pointer()
         .border_2().border_color(this.color === i ? SELECT : t.chrome)
@@ -1364,7 +1471,7 @@ export default class Sketch extends View {
       .on_drop((e, cx) => { const pics = (e.paths ?? []).filter((f) => PICTURE.test(f)); if (pics.length) this.addImages(pics, cx); })
       .children(layers)
       .when(!this.shapes.length, (el) => el.child(div().absolute().top(0).left(0).size_full().flex().items_center().justify_center()
-        .text_color(t.dim).text_size(14).child("Pick a tool (R box, A arrow, P pen, T text) and drag here.")))
+        .text_color(t.dim).text_size(14).child("Pick a tool (R box, A arrow, P pen, T text, K person, database, server…) and drag here.")))
       // Bars hidden: one small button in the corner brings them back (and a note, if any).
       .when(!this.bars, (el) => el.child(h_flex().absolute().top(8).right(8).gap(8).items_center()
         .when(Boolean(this.error ?? this.note), (row) => row.child(div().text_size(11).text_color(t.dim).child(this.error ?? this.note)))

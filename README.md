@@ -34,6 +34,7 @@ Herdr reads `~/.config/herdr-app` live, so changes show up as soon as the files 
 
 **Sketch.** A native whiteboard pane:
 - Boxes, ellipses, diamonds, arrows that stay attached, pen, text and pictures.
+- Picture shapes (K): person, database, server, cloud, browser, phone, document, queue, and a frame to group them; and for notes, a sticky note, speech bubble, idea, question, alert, gear, clock, lock, envelope and folder.
 - Copy and paste, groups, and resizing from any side. It follows light and dark themes.
 - Each git worktree has its own board. The `herdr-sketch` Agent Skill lets Claude Code or Codex in that worktree draw on it or read it.
 

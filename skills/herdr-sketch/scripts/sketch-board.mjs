@@ -12,10 +12,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { boardSlug } from "../../../mods/Sketch/slug.js";
+import { ICON_TYPES } from "../../../mods/Sketch/icons.js";
 
 const app = process.env.HERDR_APP_HOME || join(homedir(), ".config/herdr-app");
-const TYPES = new Set(["rect", "ellipse", "diamond", "text", "arrow", "line", "pen", "image"]);
-const BOXY = new Set(["rect", "ellipse", "diamond", "text", "image"]);
+const BOXY = new Set(["rect", "ellipse", "diamond", "text", "image", ...ICON_TYPES]);
+const TYPES = new Set([...BOXY, "arrow", "line", "pen"]);
 
 function git(args, cwd) {
   try { return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; }
@@ -83,7 +84,7 @@ function problems(text, dir) {
         if (s[k] == null) continue;
         const t = byId.get(s[k]);
         if (!t) out.push(`${name}: ${k} "${s[k]}" isn't a shape on the board`);
-        else if (!BOXY.has(t.type)) out.push(`${name}: ${k} "${s[k]}" is a ${t.type}; ends attach to boxes, ellipses, diamonds, text or pictures`);
+        else if (!BOXY.has(t.type)) out.push(`${name}: ${k} "${s[k]}" is a ${t.type}; ends attach to boxes, ellipses, diamonds, text, pictures or picture shapes`);
         else ends++;
       }
       const pts = Array.isArray(s.points) ? s.points : [];

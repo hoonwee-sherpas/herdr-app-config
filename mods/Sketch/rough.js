@@ -86,3 +86,31 @@ export function roughEllipse(x, y, w, h, rand) {
   };
   return [loop(), loop()];
 }
+
+/**
+ * A smooth line through `points` (an arc, a cloud's outline), drawn twice: each
+ * pass goes through slightly moved points. `closed` comes back round to the start.
+ */
+export function roughCurve(points, rand, closed = false) {
+  if (points.length < 2) return [];
+  let len = 0;
+  for (let i = 1; i < points.length; i++) len += Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+  const j = Math.min(1.2, (len / points.length) * 0.15);
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+  const pass = () => {
+    const pts = points.map(([x, y]) => [x + between(rand, -j, j), y + between(rand, -j, j)]);
+    if (closed) {
+      // Round past the start a little, like the ellipse's loop.
+      const loop = [...pts, pts[0], pts[1]];
+      const curves = [];
+      for (let i = 1; i < loop.length - 1; i++) curves.push([...loop[i], ...mid(loop[i], loop[i + 1])]);
+      return { from: mid(loop[0], loop[1]), curves };
+    }
+    const curves = [];
+    for (let i = 1; i < pts.length - 1; i++) curves.push([...pts[i], ...mid(pts[i], pts[i + 1])]);
+    const last = pts[pts.length - 1];
+    curves.push([...last, ...last]);
+    return { from: pts[0], curves };
+  };
+  return [pass(), pass()];
+}

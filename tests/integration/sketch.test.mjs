@@ -1148,3 +1148,132 @@ test("one member alone (picked to edit its text) gets no group outline", async (
   v.sel = ["a"];
   assert.equal(byId(v.render(), "sketch-group-g1"), null);
 });
+
+// ---- picture shapes: person, database, server, cloud, browser, phone, document, queue, frame
+
+// The label element holding `s` (the innermost one with that text).
+const labelOf = (v, s) => all(byId(v.render(), "sketch-canvas"), (e) => e.kids.includes(s))[0];
+
+test("the Shapes button opens a palette; picking Database and dragging draws one", async () => {
+  const { v, cx } = await mount();
+  assert.equal(byId(v.render(), "sketch-shapes"), null);
+  byId(v.render(), "tool-shapes").handlers.on_click({}, cx);
+  const palette = byId(v.render(), "sketch-shapes");
+  assert.match(text(palette), /Person.*Database.*Server.*Cloud.*Browser.*Phone.*Document.*Queue.*Frame/s);
+  byId(v.render(), "shape-database").handlers.on_click({}, cx);
+  assert.equal(byId(v.render(), "sketch-shapes"), null, "picking one closes it");
+  assert.equal(v.tool, "database");
+  assert.match(text(byId(v.render(), "tool-shapes")), /Database/, "the button says which is picked");
+  drag(v, cx, [100, 100], [220, 230]);
+  const [s] = v.shapes;
+  assert.deepEqual({ type: s.type, x: s.x, y: s.y, w: s.w, h: s.h }, { type: "database", x: 60, y: 60, w: 120, h: 130 });
+  assert.equal(v.tool, "select");
+  await cx.flush();
+  assert.match(host.files.get(FILE), /"type":"database"/);
+});
+
+test("the palette has two sections: system parts, and notes and markers", async () => {
+  const { v, cx } = await mount();
+  press(v, cx, "k");
+  const palette = text(byId(v.render(), "sketch-shapes"));
+  assert.match(palette, /System.*Person.*Frame.*Notes and markers.*Note.*Bubble.*Idea.*Question.*Alert.*Gear.*Clock.*Lock.*Envelope.*Folder/s);
+  const tiles = all(byId(v.render(), "sketch-shapes"), (e) => /^shape-/.test(e.props.id ?? "")).map((e) => e.props.id);
+  assert.equal(tiles.length, 19, "each shape once");
+  assert.equal(new Set(tiles).size, 19);
+});
+
+test("a new sticky note is yellow; with Fill on it takes the picked color instead", async () => {
+  const { v, cx } = await mount();
+  v.setTool("note");
+  drag(v, cx, at(0, 0), at(0, 0));
+  assert.equal(v.shapes[0].fill, "#fff3bf");
+  press(v, cx, "escape");
+  v.fill = true; v.color = 3;
+  v.setTool("note");
+  drag(v, cx, at(300, 0), at(300, 0));
+  assert.equal(v.shapes[1].fill, "#a5d8ff");
+});
+
+test("K opens the palette too, and Esc closes it", async () => {
+  const { v, cx } = await mount();
+  press(v, cx, "k");
+  assert.ok(byId(v.render(), "sketch-shapes"));
+  press(v, cx, "escape");
+  assert.equal(byId(v.render(), "sketch-shapes"), null);
+});
+
+test("a click with a picture shape makes one its own size, centered on the click", async () => {
+  const { v, cx } = await mount();
+  v.setTool("person");
+  drag(v, cx, at(200, 200), at(200, 200));
+  const [s] = v.shapes;
+  assert.deepEqual({ x: s.x, y: s.y, w: s.w, h: s.h }, { x: 168, y: 158, w: 64, h: 84 });
+});
+
+test("a person's label sits under it; a database's inside, below its lid", async () => {
+  const { v } = await mount([
+    { id: "u", type: "person", x: 0, y: 0, w: 64, h: 84, text: "Admin" },
+    { id: "db", type: "database", x: 200, y: 0, w: 110, h: 120, text: "Postgres" },
+  ]);
+  const admin = labelOf(v, "Admin"), pg = labelOf(v, "Postgres");
+  assert.ok(admin.props.top >= at(0, 84)[1], `under the person: ${admin.props.top}`);
+  assert.ok(pg.props.top > at(0, 0)[1] && pg.props.top + pg.props.h <= at(0, 120)[1], "inside the database");
+  assert.ok(pg.props.top >= at(0, 2 * Math.min(120 * 0.16, 110 * 0.2))[1], "below its lid");
+});
+
+test("a frame's name is at its top left", async () => {
+  const { v } = await mount([{ id: "f", type: "frame", x: 0, y: 0, w: 400, h: 300, text: "Backend" }]);
+  const l = labelOf(v, "Backend");
+  assert.deepEqual([l.props.left < at(40, 0)[0], l.props.top < at(0, 40)[1]], [true, true]);
+});
+
+test("picture shapes are hand-drawn by default, clean with H, and take a fill", async () => {
+  const { v, cx } = await mount([{ id: "c", type: "cloud", x: 0, y: 0, w: 200, h: 120, fill: "#a5d8ff" }]);
+  const rough = opsOf(v, "c");
+  assert.ok(kinds(rough).has("curve_to"), "wobbly curves");
+  assert.equal(rough.flat().filter((op) => op[0] === "move_to").length, 2, "one outline, drawn twice");
+  press(v, cx, "h");
+  const clean = opsOf(v, "c");
+  assert.equal(clean.flat().filter((op) => op[0] === "move_to").length, 1, "drawn once");
+  const fills = all(v.render(), (e) => e.kind === "path" && e.arg.path.mode === "fill");
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].arg.background.solid, "#a5d8ff");
+});
+
+test("a server's lights are filled with its ink", async () => {
+  const { v } = await mount([{ id: "s", type: "server", x: 0, y: 0, w: 96, h: 110, color: "#1971c2" }]);
+  const fills = all(v.render(), (e) => e.kind === "path" && e.arg.path.mode === "fill");
+  assert.equal(fills.length, 3);
+  assert.ok(fills.every((f) => f.arg.background === "#1971c2"));
+});
+
+test("an arrow drawn between picture shapes attaches to both", async () => {
+  const { v, cx } = await mount([
+    { id: "u", type: "person", x: 0, y: 0, w: 64, h: 84 },
+    { id: "api", type: "server", x: 300, y: 0, w: 96, h: 110 },
+  ]);
+  press(v, cx, "a");
+  drag(v, cx, at(30, 40), at(340, 50));
+  const arrow = v.shapes.at(-1);
+  assert.deepEqual([arrow.from, arrow.to], ["u", "api"]);
+});
+
+test("a new frame goes behind what's drawn, dashed; a drag inside it selects, not moves it", async () => {
+  const { v, cx } = await mount([{ id: "a", type: "rect", x: 100, y: 100, w: 80, h: 50 }]);
+  v.setTool("frame");
+  drag(v, cx, at(0, 0), at(400, 300));
+  assert.deepEqual(v.shapes.map((s) => s.type), ["frame", "rect"]);
+  assert.equal(v.shapes[0].dashed, true);
+  v.sel = [];
+  drag(v, cx, at(50, 60), at(250, 250));
+  assert.deepEqual(v.sel, ["a"], "the drag in its middle was a selection box");
+  assert.deepEqual([v.shapes[0].x, v.shapes[0].y], [0, 0], "the frame stayed");
+  down(v, cx, ...at(200, 0)); up(v, cx, ...at(200, 0));
+  assert.deepEqual(v.sel, [v.shapes[0].id], "its border picks it");
+});
+
+test("double-clicking a picture shape edits its label", async () => {
+  const { v, cx } = await mount([{ id: "d", type: "document", x: 0, y: 0, w: 110, h: 140 }]);
+  down(v, cx, ...at(50, 70), { click_count: 2 });
+  assert.equal(v.editing, "d");
+});

@@ -89,3 +89,19 @@ test("an unknown command fails with usage", () => {
   assert.equal(r.status, 2);
   assert.match(r.stderr, /usage/i);
 });
+
+test("check knows the picture shapes, and arrows attach to them", () => {
+  const s = scratch();
+  const { board } = where(s, s.repo);
+  const types = ["person", "database", "server", "cloud", "browser", "phone", "document", "queue", "frame",
+    "note", "bubble", "bulb", "question", "alert", "gear", "clock", "lock", "envelope", "folder"];
+  writeFileSync(board, JSON.stringify({ version: 1, shapes: [
+    ...types.map((type, i) => ({ id: type, type, x: i * 200, y: 0, w: 100, h: 100 })),
+    { id: "a", type: "arrow", from: "person", to: "server" },
+    { id: "bad", type: "cloud", x: 0, y: 0 },
+  ] }));
+  const r = run(s, ["check"], s.repo);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /"bad".*w/);
+  assert.doesNotMatch(r.stdout, /unknown type|"a"/);
+});
