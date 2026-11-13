@@ -13,6 +13,8 @@ const ids = (root) => [...walk(root)].map((e) => e.props.id).filter((id) => /^(s
 beforeEach(() => {
   host.reset();
   localStorage.clear();
+  // Most tests are about structure, in Herdr's order; the activity sort has its own tests.
+  localStorage.setItem("spaces.sort", "manual");
   host.layout = { id: "root", children: [{ id: "sidebar", size: { px: 268 } }] };
   host.spaces = [
     { id: "s1", name: "basecamp", folder: "/r/main", active: true, tabs: [{ id: "t1", name: "1", named: false }] },
@@ -352,4 +354,140 @@ test("a worktree whose issue is closed in Linear carries the state, for cleanup;
   const name = (id, label) => [...walk(byId(root, `space-${id}`))].find((e) => e.kind === "div" && e.kids.length === 1 && e.kids[0] === label);
   assert.equal(name("s9", "Relay skeleton").props.text_color, host.theme.muted, "its name is dimmed");
   assert.equal(name("s5", "Policy DM").props.text_color, host.theme.foreground);
+});
+
+// ---- sorting by activity (the default)
+function byActivity(changed = {}, left = {}) {
+  localStorage.removeItem("spaces.sort");
+  const now = Date.now();
+  localStorage.setItem("changed", JSON.stringify(Object.fromEntries(Object.entries(changed).map(([a, ago]) => [a, { s: "idle", at: now - ago }]))));
+  localStorage.setItem("spaces.left", JSON.stringify(Object.fromEntries(Object.entries(left).map(([id, ago]) => [id, now - ago]))));
+}
+const space = (id, name) => ({ id, name, folder: `/s/${id}`, tabs: [{ id: `t-${id}`, name: "1", named: false }] });
+const agentIn = (id, status = "idle") => ({ address: `a-${id}`, pane: `p-${id}`, space: id, tab: `t-${id}`, status, program: claude });
+const H = 3600_000, D = 24 * H;
+
+test("by default spaces sort by activity: working or waiting first, then the last hour, today, this week, older, never", async () => {
+  host.spaces = [space("old", "Old"), space("never", "Never"), space("week", "Week"), space("today", "Today"), space("hour", "Hour"), space("live", "Live"), space("asks", "Asks")];
+  host.agents = [agentIn("old"), agentIn("week"), agentIn("hour"), agentIn("live", "working"), agentIn("today"), agentIn("asks", "blocked")];
+  host.panes = [];
+  byActivity({ "a-old": 9 * D, "a-week": 3 * D, "a-hour": 10 * 60_000, "a-today": 5 * H, "a-asks": 3 * D });
+  const { v } = await mount();
+  assert.deepEqual(rowIds(v.render()), ["space-live", "space-asks", "space-hour", "space-today", "space-week", "space-old", "space-never"]);
+  assert.deepEqual(host.ran("space.move").length > 0, true, "Herdr's order follows, so agent.next goes down the list");
+  assert.match(text(byId(v.render(), "sort-spaces")), /Recent/);
+});
+
+test("within a band spaces keep their order, so the list doesn't reshuffle on every agent turn", async () => {
+  host.spaces = [space("a", "A"), space("b", "B"), space("c", "C")];
+  host.agents = [agentIn("a"), agentIn("b"), agentIn("c")];
+  host.panes = [];
+  byActivity({ "a-a": 50 * 60_000, "a-b": 1 * 60_000, "a-c": 30 * 60_000 });
+  const { v } = await mount();
+  assert.deepEqual(rowIds(v.render()), ["space-a", "space-b", "space-c"], "all in the last hour");
+  assert.deepEqual(host.ran("space.move"), []);
+});
+
+test("a space you worked in by hand counts from when you left it", async () => {
+  host.spaces = [space("x", "X"), { ...space("y", "Y"), active: true }, space("z", "Z")];
+  host.agents = [];
+  host.panes = [];
+  byActivity({}, { z: 2 * H });
+  const { v, cx } = await mount();
+  assert.deepEqual(rowIds(v.render()), ["space-z", "space-x", "space-y"], "z was left today; x and y never (y is open, but not left yet)");
+  host.spaces = host.spaces.map((w) => ({ ...w, active: w.id === "x" }));
+  v.render();
+  await cx.settle();
+  assert.deepEqual(rowIds(v.render()).slice(0, 1), ["space-y"], "y, just left, comes first");
+  assert.ok(JSON.parse(localStorage.getItem("spaces.left")).y > Date.now() - 1000, "remembered across restarts");
+});
+
+test("a checkout and its worktrees move as one, by their most active; inside it the worktrees sort too", async () => {
+  host.spaces = [space("other", "Other"), { ...space("main", "basecamp"), folder: "/r/main" }, { ...space("w1", "W1"), folder: "/r/w1" }, { ...space("w2", "W2"), folder: "/r/w2" }];
+  host.agents = [agentIn("other"), agentIn("w1"), agentIn("w2", "blocked")];
+  host.panes = ["main", "w1", "w2"].map((id) => ({ pane: `p-${id}`, tab: `t-${id}`, terminal: `a-${id}`, cwd: `/r/${id}`, program: claude }));
+  host.exec = async (cmd, args, { cwd }) => {
+    if (!cwd.startsWith("/r/")) return { code: 128, stdout: "", stderr: "fatal: not a git repository" };
+    if (args.includes("status")) return { code: 0, stdout: "# branch.head x\n", stderr: "" };
+    if (args.includes("--show-toplevel")) return { code: 0, stdout: `${cwd}\n`, stderr: "" };
+    if (args.includes("--git-common-dir")) return { code: 0, stdout: "/r/main/.git\n", stderr: "" };
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  byActivity({ "a-other": 10 * 60_000, "a-w1": 2 * D });
+  const { v, cx } = await mount();
+  await cx.tick();
+  await cx.settle();
+  assert.deepEqual(rowIds(v.render()), ["space-main", "space-w2", "space-w1", "space-other"]);
+});
+
+test("the header switches to your own order and back, and remembers it", async () => {
+  host.spaces = [space("old", "Old"), space("fresh", "Fresh")];
+  host.agents = [agentIn("old"), agentIn("fresh", "working")];
+  host.panes = [];
+  byActivity({ "a-old": 9 * D });
+  const { v, cx } = await mount();
+  assert.deepEqual(rowIds(v.render()), ["space-fresh", "space-old"]);
+  host.spaces = [host.spaces[1], host.spaces[0]]; // Herdr applied the move
+  byId(v.render(), "sort-spaces").handlers.on_click({}, cx);
+  assert.equal(localStorage.getItem("spaces.sort"), "manual");
+  assert.match(text(byId(v.render(), "sort-spaces")), /Manual/);
+  host.spaces = [host.spaces[1], host.spaces[0]]; // dragged back by hand
+  const moves = host.ran("space.move").length;
+  assert.deepEqual(rowIds(v.render()), ["space-old", "space-fresh"], "manual: Herdr's order as is");
+  assert.equal(host.ran("space.move").length, moves);
+});
+
+// ---- cleaning up finished worktrees
+function worktrees() {
+  host.spaces = [{ ...space("main", "basecamp"), folder: "/r/main" },
+    ...["done", "busy", "quiet", "recent", "open"].map((id) => ({ ...space(id, id), folder: `/r/prd-${{ done: 10422, busy: 10421, quiet: 1, recent: 2, open: 9961 }[id]}` })),
+    { ...space("notice", "notice"), folder: "/r/notice-ui" }, { ...space("ops", "ops"), folder: "/r/ops-repl" }];
+  host.agents = [agentIn("busy", "working"), agentIn("recent")];
+  host.panes = host.spaces.map((w) => ({ pane: `p-${w.id}`, tab: `t-${w.id}`, terminal: `a-${w.id}`, cwd: w.folder, program: claude }));
+  host.exec = async (cmd, args, { cwd }) => {
+    if (cmd !== "git") return { code: 1, stdout: "", stderr: "" };
+    if (args.includes("status")) return { code: 0, stdout: "# branch.head x\n", stderr: "" };
+    if (args.includes("--show-toplevel")) return { code: 0, stdout: `${cwd}\n`, stderr: "" };
+    if (args.includes("--git-common-dir")) return { code: 0, stdout: "/r/main/.git\n", stderr: "" };
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const closed = (n, title) => ({ ...lin(n, title, P9961), state: { type: "completed", name: "Released", color: "#4cb782" } });
+  host.shared["linear.mine"] = { at: Date.now(), issues: [lin(9961, "Policy DM", P9992)] };
+  host.shared["linear.spaces"] = { issues: { "PRD-10422": { ...closed(10422, "Relay"), at: Date.now() }, "PRD-10421": { ...closed(10421, "Host API"), at: Date.now() } } };
+  // No Linear issue: offered after 5 days. An open issue: after a week.
+  byActivity({ "a-recent": 2 * H }, { quiet: 9 * D, open: 6 * D, done: 3 * D, notice: 6 * D, ops: 4 * D });
+}
+
+test("worktrees whose issue is closed, or not visited in days (5 without an issue, 7 with an open one), are offered; never busy ones or the main checkout", async () => {
+  worktrees();
+  const { v, cx } = await mount();
+  await cx.tick();
+  await cx.settle();
+  v.render();
+  assert.deepEqual(v.cleanup.map((c) => [c.id, c.reason]), [["done", "closed"], ["notice", "quiet"], ["quiet", "quiet"]]);
+  assert.equal(v.cleanup[1].issue, null, "notice-ui has no Linear issue");
+  const done = v.cleanup[0];
+  assert.equal(done.folder, "/r/prd-10422");
+  assert.equal(done.issue.identifier, "PRD-10422");
+  assert.equal(done.issue.state.name, "Released");
+  assert.ok(Date.now() - done.last >= 3 * D - 1000, "last activity: when it was left");
+  const button = byId(v.render(), "cleanup");
+  assert.equal(text(button), "3");
+  assert.match(button.props.tooltip ?? button.calls.find(([n]) => n === "tooltip")?.[1][0], /1 with a closed Linear issue, 2 not visited in days/);
+  button.handlers.on_click({}, cx);
+  const o = host.overlays.at(-1);
+  assert.equal(o.mod, "worktree-cleanup");
+  assert.equal(o.kind, "dialog");
+  assert.deepEqual(o.props.candidates.map((c) => c.id), ["done", "notice", "quiet"]);
+});
+
+test("with nothing finished there's no cleanup button; it works in manual order too", async () => {
+  worktrees();
+  localStorage.setItem("spaces.sort", "manual");
+  const { v, cx } = await mount();
+  await cx.tick();
+  await cx.settle();
+  assert.ok(byId(v.render(), "cleanup"), "manual order still offers it");
+  host.spaces = host.spaces.filter((w) => !["done", "quiet", "notice"].includes(w.id));
+  assert.equal(byId(v.render(), "cleanup"), null);
 });

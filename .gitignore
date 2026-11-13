@@ -26,6 +26,7 @@
 !/mods/spaces-agents/
 !/mods/github/
 !/mods/usage-limits/
+!/mods/worktree-cleanup/
 /mods/*/gpui-kit.d.ts
 /mods/*/herdr.d.ts
 /mods/*/jsconfig.json

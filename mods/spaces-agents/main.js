@@ -105,9 +105,13 @@ export function issuesQuery(ids) {
 }
 
 const CLOSED = new Set(["completed", "canceled", "duplicate"]);
+/** The space's Linear issue, by its folder, name or branch (Herdr's or git's). */
+export function issueFor(r, byId) {
+  return issueOf(r.w, byId) ?? (r.g?.branch ? issueOf({ branch: r.g.branch }, byId) : null);
+}
 /** The space's issue when Linear has closed it (done, canceled, duplicate): its worktree can likely go. */
 export function closedIssue(r, byId) {
-  const i = issueOf(r.w, byId) ?? (r.g?.branch ? issueOf({ branch: r.g.branch }, byId) : null);
+  const i = issueFor(r, byId);
   return i && CLOSED.has(i.state?.type) ? i : null;
 }
 
@@ -175,6 +179,41 @@ export function familyRows(rows, byId) {
   }
   return out;
 }
+// ---- order by activity: spaces fall into bands by how recently anything
+// happened in them, and keep their order within a band, so the list moves only
+// when a space's band changes (not on every agent turn), and stale ones sink.
+const HOUR = 3600_000, DAY = 24 * HOUR;
+/** 0 an agent working or waiting on you, 1 the last hour, 2 today, 3 this week, 4 older, 5 never. */
+export function activityBand(last, live, now) {
+  if (live) return 0;
+  if (!last) return 5;
+  const age = now - last;
+  return age < HOUR ? 1 : age < DAY ? 2 : age < 7 * DAY ? 3 : 4;
+}
+
+/**
+ * Worktree spaces that look finished: their Linear issue is closed ("closed"),
+ * or nothing happened in them for a while ("quiet"): 5 days for one with no
+ * Linear issue, a week for one whose issue is still open. Never one with an
+ * agent working or waiting on you, a main checkout, or one git hasn't placed yet.
+ */
+export const QUIET_NO_ISSUE = 5 * DAY, QUIET_OPEN_ISSUE = 7 * DAY;
+export function cleanupCandidates(rows, activity, now) {
+  const out = [];
+  for (const r of rows) {
+    if (!r.w || !r.g?.linked) continue;
+    const { live, last } = activity(r.w);
+    if (live) continue;
+    const quietFor = r.issue ? QUIET_OPEN_ISSUE : QUIET_NO_ISSUE;
+    const reason = r.closed ? "closed" : !last || now - last >= quietFor ? "quiet" : null;
+    if (!reason) continue;
+    const i = r.issue;
+    out.push({ id: r.w.id, name: r.w.name, folder: r.folder, machine: r.w.machine ?? null, reason, last: last || null,
+      issue: i ? { identifier: i.identifier, title: i.title, state: i.state } : null });
+  }
+  return out;
+}
+
 const famIndent = (fam) => (fam ? 12 + fam.depth * 16 : 0);
 
 // ---- agents (from the shipped "agents" mod)
@@ -237,6 +276,9 @@ export default class Spaces extends View {
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
     this.famFolded = new Set(JSON.parse(localStorage.getItem("families.folded") ?? "[]"));
+    this.sortBy = localStorage.getItem("spaces.sort") ?? "activity"; // or "manual": Herdr's order, dragged by hand
+    this.left = JSON.parse(localStorage.getItem("spaces.left") ?? "{}"); // space -> when it was last left
+    this.cleanup = []; // worktree spaces that look finished (cleanupCandidates)
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
     cx.timer.every(30000, (cx) => cx.notify());
@@ -535,9 +577,11 @@ export default class Spaces extends View {
     const sp = spaces(), ps = panes();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
-    const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
+    const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null, folder: place(w, ps) }));
     const mains = new Set(list.filter((r) => r.g && !r.g.linked).map((r) => r.g.repo));
     const nested = (r) => r.g?.linked && mains.has(r.g.repo);
+    this.trackLeft(sp);
+    if (this.sortBy !== "manual") this.byActivity(list, nested);
     const issues = new Map([...Object.values(shared(SPACE_ISSUES_KEY)?.issues ?? {}), ...(shared("linear.mine")?.issues ?? [])]
       .map((x) => [x.identifier, x]));
     const out = [];
@@ -570,8 +614,58 @@ export default class Spaces extends View {
       }
       this.ordering.machines = [...moved];
     }
-    for (const r of out) if (r.w) r.closed = closedIssue(r, issues);
+    for (const r of out) if (r.w) { r.issue = issueFor(r, issues); r.closed = r.issue && CLOSED.has(r.issue.state?.type) ? r.issue : null; }
     return out.filter(r => (r.w ? this.shown.has(r.w.id) : r.header.members.some((id) => this.shown.has(id))));
+  }
+
+  // Sorts `list` by activity band, a checkout taking its most active worktree's.
+  // Remembers when you left a space: work by hand in it counts as activity.
+  trackLeft(sp) {
+    const active = sp.find((w) => w.active)?.id ?? null;
+    if (this.wasActive && this.wasActive !== active) {
+      this.left[this.wasActive] = Date.now(); // the space just left was in use until now
+      const ids = new Set(sp.map((w) => w.id));
+      for (const id of Object.keys(this.left)) if (!ids.has(id)) delete this.left[id];
+      localStorage.setItem("spaces.left", JSON.stringify(this.left));
+    }
+    this.wasActive = active;
+  }
+
+  // A space's activity: an agent working or waiting on you (live), else when
+  // anything last happened (an agent's state changed, you left it).
+  activity(w, ags = agents()) {
+    const mine = ags.filter((a) => a.space === w.id);
+    return {
+      live: mine.some((a) => a.status === "working" || a.status === "blocked"),
+      last: Math.max(this.left[w.id] ?? 0, ...mine.map((a) => this.changed[a.address]?.at ?? 0)),
+    };
+  }
+
+  byActivity(list, nested) {
+    const now = Date.now();
+    const ags = agents();
+    const band = new Map(list.map(({ w }) => {
+      const { live, last } = this.activity(w, ags);
+      return [w.id, activityBand(last, live, now)];
+    }));
+    for (const k of list.filter(nested)) {
+      const main = list.find((r) => r.g && !r.g.linked && r.g.repo === k.g.repo);
+      band.set(main.w.id, Math.min(band.get(main.w.id), band.get(k.w.id)));
+    }
+    list.sort((a, b) => band.get(a.w.id) - band.get(b.w.id)); // stable: within a band, the order they had
+  }
+
+  // Opens the cleanup dialog for the worktrees that look finished.
+  cleanupButton(t) {
+    const closed = this.cleanup.filter((c) => c.reason === "closed").length;
+    const quiet = this.cleanup.length - closed;
+    const why = [closed && `${closed} with a closed Linear issue`, quiet && `${quiet} not visited in days`].filter(Boolean).join(", ");
+    return h_flex().id("cleanup").gap(3).px(5).h(18).rounded(5).items_center().text_size(10.5).cursor_pointer()
+      .hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .tooltip(`Worktrees that look finished: ${why}. Click to review and remove them`)
+      .on_click(() => openOverlay({ mod: "worktree-cleanup", kind: "dialog", width: 560, height: 480, props: { candidates: this.cleanup } }))
+      .child(svg("mods/workspace-chrome/archive.svg").size(11).flex_none())
+      .child(String(this.cleanup.length));
   }
 
   // A family's header: its top issue, its agents (working, waiting on you); folds.
@@ -607,6 +701,8 @@ export default class Spaces extends View {
     const rows = this.ordered();
     const by = collapsed ? new Map() : this.agentsBySpace();
     const now = Date.now();
+    const ags = agents();
+    this.cleanup = cleanupCandidates(rows, (w) => this.activity(w, ags), now);
     const order = [];
     const draw = (r) => {
       if (r.header) return collapsed ? [] : [this.familyHead(r, by, t)];
@@ -791,7 +887,18 @@ export default class Spaces extends View {
     if (!collapsed && this.agentOrder.length) setAgentOrder(this.agentOrder);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
       .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
-        .when(!collapsed, el => el.child("Spaces"))
+        .when(!collapsed, el => el.child(h_flex().gap(6).items_center().child("Spaces")
+          .child(div().id("sort-spaces").px(5).h(18).rounded(5).flex().items_center().text_size(10.5).cursor_pointer()
+            .hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .tooltip(this.sortBy === "manual" ? "In the order you dragged them. Click to sort by activity"
+              : "Most recently active first; spaces nobody touched in days sink. Click to keep your own order")
+            .on_click((_e, cx) => {
+              this.sortBy = this.sortBy === "manual" ? "activity" : "manual";
+              localStorage.setItem("spaces.sort", this.sortBy);
+              cx.notify();
+            })
+            .child(this.sortBy === "manual" ? "Manual" : "Recent"))
+          .when(this.cleanup.length > 0, (el) => el.child(this.cleanupButton(t)))))
         .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
       .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode("always")

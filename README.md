@@ -15,9 +15,11 @@ Herdr reads `~/.config/herdr-app` live, so changes show up as soon as the files 
 **Sidebar (Spaces + agents).** One list instead of Herdr's separate Spaces and Agents lists.
 - Each space's agents sit under it, with their status and how long they've been in it.
 - Worktrees sit under their main checkout, with branch and ahead/behind.
+- Sorted by activity by default: spaces with an agent working or waiting on you first, then by when anything last happened (an agent's turn, or you leaving the space), in bands of the last hour, today, this week and older. Spaces keep their order within a band, so the list doesn't reshuffle on every agent turn, and stale ones sink. The Recent / Manual switch in the header goes back to your own dragged order.
 - Spaces whose Linear issues share a top issue group under a header naming it. The header is colored, can be folded, and sums up its agents (working, waiting on you). Spaces nest by issue level on a rail in the family's color.
 - A space is matched to its issue by folder, name or git branch.
 - A worktree whose issue is closed in Linear shows the state (Done, Released, Canceled…), so it's easy to spot for cleanup.
+- A cleanup button in the header (with a count) appears when worktrees look finished: their issue is closed, or nothing happened in them for 5 days (no Linear issue) or a week (an open one). It opens a dialog that checks each with git (uncommitted changes, commits on no remote, submodule commits on no remote) and ticks only the closed, safe ones. Removing does what Herdr's own Remove worktree does: closes the space and its agents, then `git worktree remove`; the branch stays.
 
 **Linear.**
 - A panel with your assigned issues, by project or by state. Sub-issues sit under their parent.
@@ -45,6 +47,7 @@ Herdr reads `~/.config/herdr-app` live, so changes show up as soon as the files 
 |---|---|
 | `layouts/main-linear.json` | The `main` layout plus a right-hand panel (Files, Changes, GitHub, Linear), the sidebar list and the status bar below |
 | `mods/spaces-agents/` | The sidebar list (a copy of Herdr's Spaces list with the agents folded in, Linear families, closed-issue tags) |
+| `mods/worktree-cleanup/` | The cleanup dialog the sidebar opens |
 | `mods/tabs-linear/` | The tab bar for that layout, with buttons that open the panels and Sketch |
 | `mods/linear-issues/` | The Linear panel: list, side nav of projects, issue detail |
 | `mods/linear-search/` | The ⌘I Linear search popup |
