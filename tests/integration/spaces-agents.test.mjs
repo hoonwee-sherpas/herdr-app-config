@@ -388,6 +388,22 @@ test("within a band spaces keep their order, so the list doesn't reshuffle on ev
   assert.deepEqual(host.ran("space.move"), []);
 });
 
+test("spaces on a machine that's away aren't moved (Herdr would refuse and alert); this computer's still sort", async () => {
+  host.machines = [{ name: null, layout: "ready" }, { name: "win", layout: "unavailable" }, { name: "box", layout: "loading" }];
+  const on = (m, id) => ({ ...space(id, id), machine: m });
+  host.spaces = [space("a", "A"), space("b", "B"), on("box", "c"), on("box", "d"), on("win", "e"), on("win", "f")];
+  host.agents = [agentIn("b", "working"), agentIn("d", "working"), agentIn("f", "working")];
+  host.panes = [];
+  byActivity({});
+  const { v, cx } = await mount();
+  v.render();
+  assert.deepEqual(host.ran("space.move"), [{ id: "b", index: 1 }], "only this computer's");
+  host.spaces = [host.spaces[1], host.spaces[0], ...host.spaces.slice(2)]; // Herdr applied it
+  host.machines = [{ name: null, layout: "ready" }, { name: "win", layout: "ready" }, { name: "box", layout: "unavailable" }];
+  v.render();
+  assert.deepEqual(host.ran("space.move").slice(1), [{ id: "f", index: 5 }], "win's, once it's back");
+});
+
 test("a space you worked in by hand counts from when you left it", async () => {
   host.spaces = [space("x", "X"), { ...space("y", "Y"), active: true }, space("z", "Z")];
   host.agents = [];

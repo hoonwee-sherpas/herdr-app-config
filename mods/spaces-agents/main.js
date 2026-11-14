@@ -596,20 +596,27 @@ export default class Spaces extends View {
     }
     // Simulate the batch so later indexes include earlier moves. An attempted
     // write can lose a sync conflict: allow the echo to settle before retrying.
+    // Herdr keeps each machine's spaces in one block, so each block is sorted
+    // in place. A machine whose layout isn't ready refuses moves with an alert:
+    // its spaces wait until it's back.
     const order = sp.map(w => w.id);
-    const target = out.filter(r => r.w).map(r => r.w.id);
-    const key = JSON.stringify([order, target, machines()]);
+    const machineOf = Object.fromEntries(sp.map(w => [w.id, w.machine ?? null]));
+    const queue = {};
+    for (const r of out) if (r.w) (queue[machineOf[r.w.id]] ??= []).push(r.w.id);
+    const target = order.map(id => queue[machineOf[id]].shift());
+    const ms = machines();
+    const movable = (name) => { const m = ms.find(k => (k.name ?? null) === name); return m ? m.layout === "ready" : name === null; };
+    const key = JSON.stringify([order, target, ms]);
     if (order.every((id, i) => id === target[i])) {
       this.ordering = null;
     } else if (this.ordering?.key !== key || this.orderingDue(Date.now())) {
       const moved = new Set();
       this.ordering = { key, at: Date.now(), machines: [] };
-      const spacesOut = out.filter(r => r.w);
-      for (let i = 0; i < spacesOut.length; i++) {
-        const from = order.indexOf(spacesOut[i].w.id);
-        if (from === i) continue;
-        run("space.move", { id: spacesOut[i].w.id, index: i + 1 });
-        moved.add(spacesOut[i].w.machine ?? null);
+      for (let i = 0; i < target.length; i++) {
+        const from = order.indexOf(target[i]);
+        if (from === i || !movable(machineOf[target[i]])) continue;
+        run("space.move", { id: target[i], index: i + 1 });
+        moved.add(machineOf[target[i]]);
         order.splice(i, 0, order.splice(from, 1)[0]);
       }
       this.ordering.machines = [...moved];
